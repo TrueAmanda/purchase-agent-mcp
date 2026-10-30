@@ -1,1 +1,1 @@
-"""Tool schemas reserved for future implementation."""
+"""Validated product and tool response schemas."""

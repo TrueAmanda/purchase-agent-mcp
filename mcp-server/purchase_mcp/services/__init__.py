@@ -1,1 +1,1 @@
-"""Catalog services reserved for future implementation."""
+"""Product catalog HTTP clients and services."""

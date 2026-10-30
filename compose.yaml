@@ -21,6 +21,7 @@ services:
     environment:
       MCP_HOST: 0.0.0.0
       MCP_PORT: 8001
+      PRODUCT_API_TIMEOUT_SECONDS: ${PRODUCT_API_TIMEOUT_SECONDS:-10}
     ports:
       - "${MCP_PORT:-8001}:8001"
     healthcheck:
