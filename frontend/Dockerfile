@@ -1,8 +1,12 @@
-FROM node:22-alpine
+FROM node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY index.html tsconfig.json ./
 COPY src ./src
-EXPOSE 5173
-CMD ["npm", "run", "dev", "--", "--port", "5173", "--strictPort"]
+RUN npm run build
+
+FROM nginx:1.28-alpine
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/dist /usr/share/nginx/html
+EXPOSE 80
