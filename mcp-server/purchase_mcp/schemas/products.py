@@ -59,3 +59,9 @@ class ProductSearchResult(BaseModel):
     total: int
     skip: int
     limit: int
+
+
+class ProductDetailResult(BaseModel):
+    status: Literal["success"] = "success"
+    source: Literal["dummyjson"] = "dummyjson"
+    product: Product

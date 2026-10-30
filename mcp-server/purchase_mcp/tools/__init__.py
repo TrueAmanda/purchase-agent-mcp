@@ -1,1 +1,1 @@
-"""MCP product search tool; detalhar_produto remains reserved."""
+"""MCP tools: buscar_produtos and detalhar_produto."""

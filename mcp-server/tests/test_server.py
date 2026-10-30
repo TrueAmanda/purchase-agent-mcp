@@ -44,8 +44,9 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             lambda request: httpx.Response(200, json=search_payload())
         ) as session:
             tools = await session.list_tools()
-            self.assertEqual([tool.name for tool in tools.tools], ["buscar_produtos"])
-            tool = tools.tools[0]
+            discovered = {tool.name: tool for tool in tools.tools}
+            self.assertEqual(set(discovered), {"buscar_produtos", "detalhar_produto"})
+            tool = discovered["buscar_produtos"]
             self.assertEqual(tool.inputSchema["required"], ["termo"])
             self.assertEqual(set(tool.inputSchema["properties"]), {"termo"})
             self.assertIn("products", tool.outputSchema["properties"])
@@ -57,6 +58,47 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(product["id"], 1)
             self.assertEqual(product["name"], "Test fixture product")
             self.assertEqual(product["price"], "19.99")
+
+    async def test_detail_discovery_and_structured_result(self):
+        async with self.connected_session(
+            lambda request: httpx.Response(200, json=search_payload()["products"][0])
+        ) as session:
+            tools = await session.list_tools()
+            detail = next(tool for tool in tools.tools if tool.name == "detalhar_produto")
+            self.assertEqual(detail.inputSchema["required"], ["id"])
+            self.assertEqual(set(detail.inputSchema["properties"]), {"id"})
+            self.assertEqual(detail.inputSchema["properties"]["id"]["type"], "integer")
+            self.assertEqual(detail.inputSchema["properties"]["id"]["exclusiveMinimum"], 0)
+            self.assertIn("product", detail.outputSchema["properties"])
+            result = await session.call_tool("detalhar_produto", {"id": 1})
+            self.assertFalse(result.isError, result.model_dump_json())
+            self.assertEqual(result.structuredContent["status"], "success")
+            self.assertEqual(result.structuredContent["product"]["id"], 1)
+            self.assertEqual(result.structuredContent["product"]["price"], "19.99")
+            self.assertIsNone(result.structuredContent["product"]["brand"])
+
+    async def test_detail_invalid_ids_do_not_call_api(self):
+        def handler(request):
+            self.fail("An invalid product ID must not reach the API.")
+
+        async with self.connected_session(handler) as session:
+            for arguments in ({}, {"id": 0}, {"id": -1}, {"id": True}, {"id": 1.0},
+                              {"id": "1"}, {"id": "abc"}, {"id": None}):
+                with self.subTest(arguments=arguments):
+                    result = await session.call_tool("detalhar_produto", arguments)
+                    self.assertTrue(result.isError)
+                    self.assertIsNone(result.structuredContent)
+
+    async def test_detail_404_is_reported_over_mcp(self):
+        async with self.connected_session(
+            lambda request: httpx.Response(404, json={"message": "private upstream message"})
+        ) as session:
+            result = await session.call_tool("detalhar_produto", {"id": 999999})
+            self.assertTrue(result.isError)
+            self.assertIsNone(result.structuredContent)
+            self.assertIn("product_not_found", result.content[0].text)
+            self.assertIn("404", result.content[0].text)
+            self.assertNotIn("private", result.content[0].text)
 
     async def test_no_results_and_empty_input_are_different(self):
         api_calls = []
@@ -79,11 +121,14 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         async with self.connected_session(
             lambda request: httpx.Response(503, text="sensitive upstream body")
         ) as session:
-            result = await session.call_tool("buscar_produtos", {"termo": "phone"})
-            self.assertTrue(result.isError)
-            self.assertIn("api_http_error", result.content[0].text)
-            self.assertIn("503", result.content[0].text)
-            self.assertNotIn("sensitive upstream body", result.content[0].text)
+            for tool_name, arguments in (("buscar_produtos", {"termo": "phone"}),
+                                         ("detalhar_produto", {"id": 1})):
+                with self.subTest(tool_name=tool_name):
+                    result = await session.call_tool(tool_name, arguments)
+                    self.assertTrue(result.isError)
+                    self.assertIn("api_http_error", result.content[0].text)
+                    self.assertIn("503", result.content[0].text)
+                    self.assertNotIn("sensitive upstream body", result.content[0].text)
 
     async def test_invalid_arguments_do_not_call_api(self):
         def handler(request):

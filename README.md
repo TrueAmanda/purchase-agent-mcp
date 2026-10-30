@@ -1,6 +1,6 @@
 # purchase-agent-mcp
 
-Agente de compras em desenvolvimento com FastAPI, servidor MCP independente, PostgreSQL e React/TypeScript. A ferramenta MCP `buscar_produtos(termo)` consulta a API DummyJSON. O agente, a lógica de compras, a integração com OpenRouter e a ferramenta `detalhar_produto` ainda não estão implementados.
+Agente de compras em desenvolvimento com FastAPI, servidor MCP independente, PostgreSQL e React/TypeScript. As ferramentas MCP `buscar_produtos(termo)` e `detalhar_produto(id)` consultam a API DummyJSON. O agente, a lógica de compras e a integração com OpenRouter ainda não estão implementados.
 
 ## Iniciar com Docker Compose
 
@@ -48,7 +48,7 @@ No Compose, o backend recebe os mesmos campos de conexão do PostgreSQL; a URL �
 ## Inicialização e tratamento de falhas
 
 1. O PostgreSQL inicia e seu healthcheck executa `pg_isready` via TCP.
-2. O MCP inicia, expõe `/health` e registra somente `buscar_produtos` via Streamable HTTP em `/mcp`.
+2. O MCP inicia, expõe `/health` e registra `buscar_produtos` e `detalhar_produto` via Streamable HTTP em `/mcp`.
 3. O backend aguarda ambos ficarem saudáveis. No lifespan do FastAPI, tenta conectar ao banco com limite de tentativas e timeout por conexão; ao esgotar as tentativas, termina com erro explícito.
 4. O SQLAlchemy importa os modelos e executa `Base.metadata.create_all()` antes de aceitar requisições. Erros de criação das tabelas impedem a inicialização.
 5. O frontend inicia após o backend ficar saudável e serve o build estático com Nginx.
@@ -71,11 +71,13 @@ docker compose logs backend mcp-server postgres frontend
 
 O backend retorna `{"status":"ok","database":"ok"}`; MCP e frontend retornam `{"status":"ok"}`. A documentação FastAPI está em `http://localhost:8000/docs`. O endpoint `/mcp` recebe o protocolo MCP, não uma página web.
 
-## Buscar produtos por MCP, sem LLM
+## Consultar produtos por MCP, sem LLM
 
-A implementação usa o SDK oficial Python `mcp==1.30.0`, com Streamable HTTP, respostas JSON e transporte sem estado. A assinatura pública é `buscar_produtos(termo: str)`. O parâmetro de contexto do SDK é interno e não aparece na descoberta da ferramenta.
+A implementação usa o SDK oficial Python `mcp==1.30.0`, com Streamable HTTP, respostas JSON e transporte sem estado. As assinaturas públicas são `buscar_produtos(termo: str)` e `detalhar_produto(id: int)`. O parâmetro de contexto do SDK é interno e não aparece na descoberta das ferramentas.
 
-O cliente HTTPX fica em `mcp-server/purchase_mcp/services/product_client.py`, separado da definição da ferramenta em `tools/product_search.py`. O SDK cria e fecha o cliente HTTPX no ciclo de vida de cada requisição MCP. A busca faz `GET https://dummyjson.com/products/search` com `q` enviado por `params`, sem concatenar o termo à URL. Espaços externos são removidos; termos vazios ou compostos apenas de espaços são rejeitados antes de qualquer chamada à API.
+O cliente HTTPX fica em `mcp-server/purchase_mcp/services/product_client.py`, separado das definições das ferramentas em `tools/product_search.py`. O SDK cria e fecha o cliente HTTPX no ciclo de vida de cada requisição MCP. As duas operações compartilham a requisição HTTP, o timeout, o tratamento de erros, a decodificação de JSON e a validação dos dados do produto.
+
+A busca faz `GET https://dummyjson.com/products/search` com `q` enviado por `params`, sem concatenar o termo à URL. Espaços externos são removidos; termos vazios ou compostos apenas de espaços são rejeitados antes de qualquer chamada à API. O detalhamento faz `GET https://dummyjson.com/products/{id}`. O ID deve ser um inteiro positivo: zero, negativos, booleanos, strings e números decimais são rejeitados, sem consultar a API.
 
 Para iniciar ou atualizar somente o MCP, preservando os outros serviços e volumes:
 
@@ -87,18 +89,22 @@ O cliente de teste incluído utiliza `ClientSession` e `streamable_http_client` 
 
 ```powershell
 docker compose exec mcp-server python -m purchase_mcp.client phone --url http://mcp-server:8001/mcp
+docker compose exec mcp-server python -m purchase_mcp.client --id 1 --url http://mcp-server:8001/mcp
 ```
 
-Esse comando testa o protocolo MCP real via HTTP e o nome interno do serviço na rede Docker. Também é possível executar o cliente no host, com as dependências do MCP instaladas:
+O primeiro comando executa a busca; o segundo consulta o produto de ID `1`. Ambos testam o protocolo MCP real via HTTP e o nome interno do serviço na rede Docker. A forma anterior de buscar por termo continua funcionando. Também é possível executar o cliente no host, com as dependências do MCP instaladas:
 
 ```powershell
 cd mcp-server
 python -m purchase_mcp.client phone --url http://localhost:8001/mcp
+python -m purchase_mcp.client --id 1 --url http://localhost:8001/mcp
 ```
 
-A descoberta deve listar somente `buscar_produtos`. O resultado contém `isError` e `structuredContent`. Em caso de erro da ferramenta ou falha na conexão, o cliente termina com código de saída `1`.
+A descoberta deve listar `buscar_produtos` e `detalhar_produto`. O resultado contém `isError` e `structuredContent`. Em caso de erro da ferramenta ou falha na conexão, o cliente termina com código de saída `1`. Informe um termo ou `--id`, sem combinar os dois.
 
 ### Contrato de saída
+
+O contrato de `buscar_produtos` permanece:
 
 | Campo | Significado |
 | --- | --- |
@@ -106,6 +112,8 @@ A descoberta deve listar somente `buscar_produtos`. O resultado contém `isError
 | `query`, `source` | Termo normalizado e origem `dummyjson` |
 | `products` | Produtos retornados pela API, sem produtos locais de substituição |
 | `total`, `skip`, `limit` | Metadados de paginação fornecidos pela DummyJSON; a busca mantém a primeira página e o limite padrão da API |
+
+Para `detalhar_produto`, `structuredContent` contém `status=success`, `source=dummyjson` e `product`, com um único produto validado. O ID retornado pela API deve corresponder ao ID solicitado; uma resposta com outro ID é tratada como `invalid_response`. Um produto inexistente gera erro, sem retornar objeto de produto.
 
 Cada produto contém `id`, `name` (campo `title` da API), `price` e `description`. Quando disponíveis, também são retornados categoria, marca, SKU, estoque, avaliação, desconto, disponibilidade, quantidade mínima, garantia, entrega, política de devolução, thumbnail, imagens e tags. Campos opcionais ausentes são `null`. Avaliações individuais e e-mails de avaliadores não são retornados.
 
@@ -117,9 +125,11 @@ O preço é convertido diretamente do número JSON para `Decimal`, sem cálculos
 | --- | --- |
 | Busca válida sem resultados | `isError=false`, `status=no_results`, `products=[]`, `total=0` |
 | Termo vazio ou apenas espaços | `isError=true`, texto com código `invalid_term` |
+| ID que não é inteiro positivo | `isError=true`, falha na validação dos argumentos MCP antes da chamada HTTP |
+| Produto inexistente no detalhamento (HTTP 404 da DummyJSON) | `isError=true`, código `product_not_found` e texto indicando HTTP 404; nenhum produto é retornado |
 | Timeout da API | `isError=true`, código `api_timeout` |
 | Falha de rede ou protocolo HTTP | `isError=true`, código `api_unavailable` |
-| Resposta HTTP fora de 2xx, inclusive 429 e 5xx | `isError=true`, código `api_http_error` e status HTTP |
+| Demais respostas HTTP fora de 2xx, inclusive 429 e 5xx | `isError=true`, código `api_http_error` e status HTTP; um 404 na busca mantém esse tratamento |
 | Content-Type, JSON, produto ou paginação inválidos | `isError=true`, código `invalid_response` |
 
 Falhas nunca são convertidas em listas vazias nem recebem produtos de substituição. Não há retentativas automáticas. Os logs da aplicação incluem status, contagem, duração e categoria de falha; não incluem termos de busca, corpos de resposta, credenciais ou URLs com parâmetros. Os logs detalhados de HTTPX e HTTPCore são limitados a WARNING.
@@ -155,9 +165,27 @@ $call = @{
 }
 $response = Invoke-RestMethod -Uri $mcpUrl -Method Post -Headers $headers -ContentType 'application/json' -Body ($call | ConvertTo-Json -Depth 10)
 $response.result | ConvertTo-Json -Depth 20
+
+$detailCall = @{
+    jsonrpc = '2.0'; id = 4; method = 'tools/call'
+    params = @{ name = 'detalhar_produto'; arguments = @{ id = 1 } }
+}
+$detail = Invoke-RestMethod -Uri $mcpUrl -Method Post -Headers $headers -ContentType 'application/json' -Body ($detailCall | ConvertTo-Json -Depth 10)
+$detail.result | ConvertTo-Json -Depth 20
 ```
 
 Como o transporte é sem estado, não é necessário guardar `Mcp-Session-Id`. O status HTTP 200 do envelope não garante sucesso da ferramenta: confira `result.isError`. Para testar ausência de resultados, use um termo inexistente; para validar a entrada, use `termo = '   '`. Ajuste a porta se `MCP_PORT` for alterada.
+
+No detalhamento, altere `arguments.id` para `999999` para testar um ID inexistente e conferir o código `product_not_found`/HTTP 404; esse número não é tratado de forma especial pela aplicação. Use `0`, `-1`, `'1'`, `'abc'`, `$true` ou `1.5` para testar IDs inválidos. As falhas da ferramenta são transportadas no envelope MCP com `isError=true`; o HTTP 404 mencionado é o status da DummyJSON, não o status HTTP da requisição ao endpoint `/mcp`.
+
+Para reproduzir os casos numéricos pela CLI:
+
+```powershell
+docker compose exec mcp-server python -m purchase_mcp.client --id 999999 --url http://mcp-server:8001/mcp
+docker compose exec mcp-server python -m purchase_mcp.client --id 0 --url http://mcp-server:8001/mcp
+```
+
+Ambos devem retornar erro e código de saída `1`, sem produto fictício. A CLI usa `type=int` e rejeita textos e decimais localmente; os testes JSON-RPC acima verificam também a validação do servidor MCP.
 
 ## Validar a criação das tabelas
 
@@ -209,7 +237,7 @@ Repita os comandos de inspeção das tabelas. `docker compose down` preserva o v
 - `backend/app/database.py`: engine, inicialização e sessões por requisição.
 - `backend/app/models/`: modelos SQLAlchemy 2 e registro dos metadados.
 - `backend/app/api/`, `services/`, `schemas/`: rotas e camadas de aplicação.
-- `mcp-server/purchase_mcp/`: transporte MCP, healthcheck, cliente HTTPX, schemas, ferramenta de busca e cliente MCP de teste.
+- `mcp-server/purchase_mcp/`: transporte MCP, healthcheck, cliente HTTPX compartilhado, schemas, ferramentas de busca e detalhamento e cliente MCP de teste.
 - `frontend/src/`: React, TypeScript e Vite; `frontend/nginx.conf`: arquivos estáticos, healthcheck e proxy.
 - Cada componente tem seu Dockerfile e arquivo de dependências. O frontend usa `package-lock.json` e `npm ci` em build de múltiplos estágios.
 
@@ -229,6 +257,8 @@ Esses testes validam configuração, tentativas de conexão, criação idempoten
 Para o MCP, instale suas dependências em um ambiente próprio e execute `python -m unittest discover -s tests -v` dentro de `mcp-server`.
 
 Os testes do MCP usam HTTPX MockTransport para simular falhas e validar o contrato, sem depender da disponibilidade da DummyJSON. A descoberta e as chamadas são testadas com o cliente oficial MCP via ASGI/Streamable HTTP. Para validar a consulta externa real e a rede TCP, execute o cliente de teste contra o container conforme os comandos acima.
+
+O conjunto cobre regressão da busca, descoberta das duas ferramentas, preço decimal, campos opcionais ausentes, IDs inválidos, HTTP 404, timeout, falha de rede, respostas inválidas e divergência entre o ID solicitado e o retornado. Nenhum teste exige remover volumes do PostgreSQL.
 
 Para o frontend: `cd frontend`, `npm.cmd ci` e `npm.cmd run build`. No Linux/macOS, use `npm`. Node.js 22.12+ ou 24+ é necessário. Para desenvolvimento local do frontend, `npm.cmd run dev`; o proxy Nginx está disponível na versão Docker.
 

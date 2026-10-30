@@ -27,6 +27,98 @@ class SettingsTests(unittest.TestCase):
 
 
 class ProductClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_detail_uses_real_fields_without_defaults(self):
+        payload = search_payload()["products"][0]
+
+        def handler(request):
+            self.assertEqual(request.method, "GET")
+            self.assertEqual(request.url.path, "/products/1")
+            self.assertEqual(dict(request.url.params), {})
+            self.assertEqual(request.extensions["timeout"]["read"], 2.5)
+            return httpx.Response(200, json=payload)
+
+        async with httpx.AsyncClient(
+            base_url="https://dummyjson.com", transport=httpx.MockTransport(handler), timeout=2.5
+        ) as client:
+            result = await ProductClient(client).get_product(1)
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.source, "dummyjson")
+        self.assertEqual(result.product.id, payload["id"])
+        self.assertEqual(result.product.name, payload["title"])
+        self.assertEqual(result.product.description, payload["description"])
+        self.assertEqual(result.product.price, Decimal("19.99"))
+        self.assertEqual(result.product.stock, payload["stock"])
+        self.assertIsNone(result.product.brand)
+        self.assertIsNone(result.product.warranty_information)
+        self.assertNotIn("currency", result.product.model_dump())
+        self.assertNotIn("private@example.test", result.model_dump_json())
+
+    async def test_invalid_ids_never_call_api(self):
+        def handler(request):
+            self.fail("An invalid ID must not trigger an HTTP request.")
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            for product_id in (0, -1, True, False, "1", "invalid", 1.0, 1.5, None):
+                with self.subTest(product_id=product_id), self.assertRaises(ProductAPIError) as error:
+                    await ProductClient(client).get_product(product_id)
+                self.assertEqual(error.exception.code, "invalid_id")
+
+    async def test_detail_404_is_not_a_fictitious_product(self):
+        async with httpx.AsyncClient(
+            base_url="https://dummyjson.com", transport=httpx.MockTransport(
+                lambda request: httpx.Response(404, json={"message": "sensitive upstream message"})
+            ),
+        ) as client:
+            with self.assertRaises(ProductAPIError) as error:
+                await ProductClient(client).get_product(999999)
+        self.assertEqual(error.exception.code, "product_not_found")
+        self.assertEqual(error.exception.status_code, 404)
+        self.assertIn("404", str(error.exception))
+        self.assertNotIn("sensitive", str(error.exception))
+
+    async def test_detail_rejects_invalid_or_mismatched_product_data(self):
+        mismatched = search_payload()["products"][0]
+        mismatched["id"] = 2
+        missing_price = search_payload()["products"][0]
+        del missing_price["price"]
+        for payload in ({}, mismatched, missing_price, {"id": 1, "message": "not a product"}):
+            with self.subTest(payload=payload):
+                async with httpx.AsyncClient(
+                    base_url="https://dummyjson.com", transport=httpx.MockTransport(
+                        lambda request: httpx.Response(200, json=payload)
+                    ),
+                ) as client:
+                    with self.assertRaises(ProductAPIError) as error:
+                        await ProductClient(client).get_product(1)
+                self.assertEqual(error.exception.code, "invalid_response")
+
+    async def test_detail_reuses_shared_failure_mapping(self):
+        def timeout(request):
+            raise httpx.ReadTimeout("sensitive details", request=request)
+
+        def network_failure(request):
+            raise httpx.ConnectError("sensitive details", request=request)
+
+        for handler, code in (
+            (timeout, "api_timeout"),
+            (network_failure, "api_unavailable"),
+            (lambda request: httpx.Response(503, text="sensitive body"), "api_http_error"),
+            (lambda request: httpx.Response(200, text="<html>bad gateway</html>"), "invalid_response"),
+            (lambda request: httpx.Response(
+                200, content=b"broken JSON", headers={"content-type": "application/json"}
+            ), "invalid_response"),
+        ):
+            with self.subTest(code=code):
+                async with httpx.AsyncClient(
+                    base_url="https://dummyjson.com", transport=httpx.MockTransport(handler)
+                ) as client:
+                    with self.assertLogs("purchase_mcp.services.product_client") as logs:
+                        with self.assertRaises(ProductAPIError) as error:
+                            await ProductClient(client).get_product(1)
+                self.assertEqual(error.exception.code, code)
+                self.assertNotIn("sensitive", str(error.exception))
+                self.assertNotIn("sensitive", " ".join(logs.output))
+
     async def test_success_mapping_decimal_encoding_and_timeout(self):
         def handler(request):
             self.assertEqual(request.method, "GET")
