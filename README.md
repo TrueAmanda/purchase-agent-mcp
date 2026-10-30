@@ -399,6 +399,22 @@ Os testes antigos do MCP em `unittest` e o script dependente da DummyJSON real f
 
 Para o frontend: `cd frontend`, `npm.cmd ci` e `npm.cmd run build`. No Linux/macOS, use `npm`. Node.js 22.12+ ou 24+ é necessário. Para desenvolvimento local do frontend, `npm.cmd run dev`; o proxy Nginx está disponível na versão Docker.
 
+## Integração contínua (GitHub Actions)
+
+O workflow `.github/workflows/ci.yml` executa em pushes para `main` e pull requests com destino a `main`. Um único job Ubuntu usa Python 3.12, instala `mcp-server/requirements-ci.txt` e o pacote compartilhado, executa Ruff no Python de `backend/`, `mcp-server/` e `shared/` e roda toda a suíte MCP com Pytest. Falhas de lint ou testes fazem o job falhar.
+
+O cache do pip considera os arquivos de dependências e `shared/pyproject.toml`. Não há serviços PostgreSQL, chamadas à DummyJSON externa ou credenciais de LLM: `TEST_DATABASE_URL` vazio seleciona SQLite temporário, e as fixtures simulam o HTTP e removem as variáveis de chaves LLM. O único teste específico de migração PostgreSQL é pulado nesse modo; sua cobertura continua disponível pelo Compose de testes.
+
+Para reproduzir as verificações localmente, na raiz, usando o ambiente virtual do MCP já criado:
+
+```powershell
+.\mcp-server\.venv\Scripts\python.exe -m pip install -r mcp-server/requirements-ci.txt -e ./shared
+.\mcp-server\.venv\Scripts\python.exe -m ruff check backend mcp-server shared
+.\mcp-server\.venv\Scripts\python.exe -m pytest mcp-server -q
+```
+
+O workflow possui apenas permissão de leitura do repositório e não realiza commits, merges ou publicação.
+
 ## Referências
 
 - [Docker Compose: ordem de inicialização](https://docs.docker.com/compose/how-tos/startup-order/)

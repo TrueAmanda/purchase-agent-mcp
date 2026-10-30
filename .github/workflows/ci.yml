@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python lint and MCP tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TEST_DATABASE_URL: ""
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            mcp-server/requirements.txt
+            mcp-server/requirements-test.txt
+            mcp-server/requirements-ci.txt
+            shared/pyproject.toml
+
+      - name: Install CI dependencies
+        run: python -m pip install -r mcp-server/requirements-ci.txt -e ./shared
+
+      - name: Lint Python
+        run: python -m ruff check backend mcp-server shared
+
+      - name: Run all MCP tests without external services
+        run: python -m pytest mcp-server -q
