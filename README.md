@@ -1,6 +1,6 @@
 # purchase-agent-mcp
 
-Agente de compras em desenvolvimento com FastAPI, servidor MCP independente, PostgreSQL e React/TypeScript. As ferramentas MCP `buscar_produtos(termo)` e `detalhar_produto(id)` consultam a API DummyJSON. O agente, a lógica de compras e a integração com OpenRouter ainda não estão implementados.
+Agente de compras em desenvolvimento com FastAPI, servidor MCP independente, PostgreSQL e React/TypeScript. As ferramentas MCP `buscar_produtos(termo)` e `detalhar_produto(id)` consultam a DummyJSON; `criar_requisicao(request)` valida os produtos e grava uma requisição de compra no PostgreSQL. O agente OpenRouter e a interface de compras ainda não estão implementados.
 
 ## Iniciar com Docker Compose
 
@@ -41,21 +41,38 @@ A rede padrão do Compose permite resolver os nomes dos serviços por DNS. `loca
 
 Os valores padrão são destinados ao desenvolvimento local: banco e usuário `purchase_agent`, senha de exemplo `purchase_local_only`. Substitua a senha em ambientes compartilhados. O `.env.example` não contém credenciais reais. Mantenha `.env` fora do Git. Valores vazios no `.env` usam os padrões definidos no Compose.
 
-No Compose, o backend recebe os mesmos campos de conexão do PostgreSQL; a URL é montada com `URL.create`, aceitando caracteres especiais na senha. `DATABASE_URL` é uma alternativa apenas para executar o backend fora do Compose, usando o formato `postgresql+psycopg://...`. Nesse caso, forneça as variáveis ao processo: o backend não carrega `.env` automaticamente e o PostgreSQL precisa estar acessível fora da rede Docker.
+No Compose, backend e MCP recebem os mesmos campos de conexão do PostgreSQL; a URL é montada com `URL.create`, aceitando caracteres especiais na senha. `DATABASE_URL` é uma alternativa para executar esses processos fora do Compose, usando o formato `postgresql+psycopg://...`. Nesse caso, forneça as variáveis ao processo: os serviços não carregam `.env` automaticamente e o PostgreSQL precisa estar acessível fora da rede Docker.
 
 `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` e `VITE_API_BASE_URL` continuam reservados para etapas futuras. Nenhum segredo é enviado ao build do frontend. O proxy `/api/` já está configurado no Nginx.
 
 ## Inicialização e tratamento de falhas
 
 1. O PostgreSQL inicia e seu healthcheck executa `pg_isready` via TCP.
-2. O MCP inicia, expõe `/health` e registra `buscar_produtos` e `detalhar_produto` via Streamable HTTP em `/mcp`.
+2. O MCP aguarda o PostgreSQL saudável, inicializa o esquema e suas migrações, expõe `/health` e registra as três ferramentas via Streamable HTTP em `/mcp`.
 3. O backend aguarda ambos ficarem saudáveis. No lifespan do FastAPI, tenta conectar ao banco com limite de tentativas e timeout por conexão; ao esgotar as tentativas, termina com erro explícito.
-4. O SQLAlchemy importa os modelos e executa `Base.metadata.create_all()` antes de aceitar requisições. Erros de criação das tabelas impedem a inicialização.
+4. Ambos os processos usam a inicialização do pacote compartilhado: `create_all()` cria tabelas ausentes e uma migração SQL versionada atualiza o esquema anterior. Erros impedem a inicialização antes de aceitar requisições.
 5. O frontend inicia após o backend ficar saudável e serve o build estático com Nginx.
 
-O backend usa `pool_pre_ping` para descartar conexões antigas. `/health` consulta o banco e retorna HTTP 503 se ele ficar indisponível, sem expor credenciais ou detalhes da exceção. Logs de inicialização também não imprimem a URL do banco. Nenhum processo executa tentativas infinitas.
+Backend e MCP possuem engines e pools independentes com `pool_pre_ping`. Seus endpoints `/health` consultam o banco e retornam HTTP 503 se ele ficar indisponível, sem expor credenciais ou detalhes da exceção. Logs de inicialização não imprimem a URL do banco. Nenhum processo executa tentativas infinitas.
 
-`create_all()` é idempotente para tabelas existentes, mas não altera suas colunas. Migrações de alterações futuras de esquema ficam para outra etapa. Execute apenas uma instância do backend durante esta inicialização simples.
+`create_all()` não altera colunas existentes. A atualização desta etapa está em `shared/purchase_storage/migrations/001_purchase_creation.sql` e é registrada em `purchase_schema_migrations`. A inicialização usa uma transação e um advisory lock do PostgreSQL para serializar execuções entre processos. A migração preserva linhas existentes e é executada uma única vez por banco.
+
+## Arquitetura da persistência
+
+```mermaid
+flowchart LR
+    Backend[FastAPI] --> Storage[purchase_storage: modelos e migrações]
+    MCP[Servidor MCP] --> Storage
+    Storage --> PG[(PostgreSQL)]
+    MCP --> API[DummyJSON]
+    Caller[Cliente MCP ou futuro agente] --> MCP
+```
+
+`shared/` é um pacote Python instalável e independente de FastAPI, MCP e OpenRouter. Ele contém os modelos SQLAlchemy originais, a configuração e a inicialização do banco. Os imports antigos de `backend/app/models/` continuam disponíveis como reexportações. O MCP importa somente o pacote compartilhado; ele não importa `app.main` nem executa o processo do backend.
+
+O serviço de criação usa `PurchaseRequestRepository` para ler e gravar os mesmos contratos de persistência. As chamadas bloqueantes de SQLAlchemy são executadas em threads; a consulta externa usa HTTPX assíncrono. A aplicação HTTP do MCP inicializa seu engine e as migrações no startup e descarta o pool no shutdown. O contexto de cada requisição MCP recebe o cliente de produtos e o repositório.
+
+Os Dockerfiles Python agora usam a raiz do repositório como contexto para instalar `shared/`. Para builds manuais: `docker build -f backend/Dockerfile .` e `docker build -f mcp-server/Dockerfile .`. O Compose já fornece esses caminhos.
 
 ## Validar os serviços
 
@@ -73,16 +90,16 @@ O backend retorna `{"status":"ok","database":"ok"}`; MCP e frontend retornam `{"
 
 ## Consultar produtos por MCP, sem LLM
 
-A implementação usa o SDK oficial Python `mcp==1.30.0`, com Streamable HTTP, respostas JSON e transporte sem estado. As assinaturas públicas são `buscar_produtos(termo: str)` e `detalhar_produto(id: int)`. O parâmetro de contexto do SDK é interno e não aparece na descoberta das ferramentas.
+A implementação usa o SDK oficial Python `mcp==1.30.0`, com Streamable HTTP, respostas JSON e transporte sem estado. As assinaturas públicas são `buscar_produtos(termo: str)`, `detalhar_produto(id: int)` e `criar_requisicao(request: PurchaseRequestInput)`. O parâmetro de contexto do SDK é interno e não aparece na descoberta das ferramentas.
 
 O cliente HTTPX fica em `mcp-server/purchase_mcp/services/product_client.py`, separado das definições das ferramentas em `tools/product_search.py`. O SDK cria e fecha o cliente HTTPX no ciclo de vida de cada requisição MCP. As duas operações compartilham a requisição HTTP, o timeout, o tratamento de erros, a decodificação de JSON e a validação dos dados do produto.
 
 A busca faz `GET https://dummyjson.com/products/search` com `q` enviado por `params`, sem concatenar o termo à URL. Espaços externos são removidos; termos vazios ou compostos apenas de espaços são rejeitados antes de qualquer chamada à API. O detalhamento faz `GET https://dummyjson.com/products/{id}`. O ID deve ser um inteiro positivo: zero, negativos, booleanos, strings e números decimais são rejeitados, sem consultar a API.
 
-Para iniciar ou atualizar somente o MCP, preservando os outros serviços e volumes:
+Para iniciar ou atualizar o MCP com sua dependência PostgreSQL, preservando os volumes:
 
 ```powershell
-docker compose up --build -d --no-deps --wait mcp-server
+docker compose up --build -d --wait mcp-server
 ```
 
 O cliente de teste incluído utiliza `ClientSession` e `streamable_http_client` do SDK oficial. Ele executa a negociação `initialize`, descobre as ferramentas com `tools/list` e chama `tools/call`, sem LLM:
@@ -100,7 +117,7 @@ python -m purchase_mcp.client phone --url http://localhost:8001/mcp
 python -m purchase_mcp.client --id 1 --url http://localhost:8001/mcp
 ```
 
-A descoberta deve listar `buscar_produtos` e `detalhar_produto`. O resultado contém `isError` e `structuredContent`. Em caso de erro da ferramenta ou falha na conexão, o cliente termina com código de saída `1`. Informe um termo ou `--id`, sem combinar os dois.
+A descoberta deve listar `buscar_produtos`, `detalhar_produto` e `criar_requisicao`. O resultado contém `isError` e `structuredContent`. Em caso de erro da ferramenta ou falha na conexão, o cliente termina com código de saída `1`. Informe um termo, `--id` ou `--create`, sem combinar essas opções.
 
 ### Contrato de saída
 
@@ -187,6 +204,58 @@ docker compose exec mcp-server python -m purchase_mcp.client --id 0 --url http:/
 
 Ambos devem retornar erro e código de saída `1`, sem produto fictício. A CLI usa `type=int` e rejeita textos e decimais localmente; os testes JSON-RPC acima verificam também a validação do servidor MCP.
 
+## Criar uma requisição pelo protocolo MCP
+
+O contrato é um argumento `request` com `title`, `requester_name`, `idempotency_key` (UUID) e `items`. Cada item aceita somente `product_id` e `quantity`, ambos inteiros positivos. A quantidade máxima acompanha o INTEGER do banco; são aceitos até 100 produtos distintos por chamada. Listas vazias, IDs repetidos, textos vazios, campos extras e preços/totais/moedas enviados pelo chamador são rejeitados por Pydantic.
+
+O chamador escolhe quando usar a ferramenta. Nenhuma rota do backend prescreve uma sequência de ferramentas. É possível chamar `criar_requisicao` diretamente: a verificação dos produtos e preços ocorre dentro do serviço, mesmo sem busca ou detalhamento anteriores. O futuro agente pode usar o schema exposto em `tools/list`; a ferramenta declara `readOnlyHint=false` e idempotência condicionada à reutilização da mesma chave para a mesma intenção.
+
+Em PowerShell, na raiz do projeto, gere uma intenção de teste uma única vez e guarde a chave para as retentativas. O comando de criação abaixo grava dados no banco do projeto:
+
+```powershell
+New-Item -ItemType Directory -Force tmp | Out-Null
+$purchaseRequest = @{
+    title = 'MCP test request'
+    requester_name = 'Local tester'
+    idempotency_key = [guid]::NewGuid().ToString()
+    items = @(@{ product_id = 1; quantity = 2 })
+}
+$purchaseRequest | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 tmp/purchase-request.json
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Get-Content -Raw tmp/purchase-request.json | docker compose exec -T mcp-server python -m purchase_mcp.client --create - --url http://mcp-server:8001/mcp
+```
+
+Repita somente a última linha, sem gerar outra chave, para verificar `replayed=true` e o mesmo `request_number`. Para uma nova intenção, gere outra chave. No host, a opção `--create` também aceita um caminho de arquivo UTF-8. O cliente executa a mesma negociação MCP, descoberta e `tools/call` das ferramentas de catálogo; não usa LLM.
+
+Após o handshake JSON-RPC demonstrado na seção anterior, a chamada manual equivalente é:
+
+```powershell
+$createCall = @{
+    jsonrpc = '2.0'; id = 5; method = 'tools/call'
+    params = @{ name = 'criar_requisicao'; arguments = @{ request = $purchaseRequest } }
+}
+$created = Invoke-RestMethod -Uri $mcpUrl -Method Post -Headers $headers -ContentType 'application/json; charset=utf-8' -Body ($createCall | ConvertTo-Json -Depth 10)
+$created.result | ConvertTo-Json -Depth 20
+```
+
+### Preços, transação e idempotência
+
+1. O serviço procura a chave de idempotência antes de consultar a DummyJSON. Uma chave já gravada retorna o snapshot persistido; não há nova cotação nem nova gravação, inclusive se a API externa estiver indisponível.
+2. Para uma nova chave, cada produto é consultado por `ProductClient.get_product`. Um produto inexistente ou falha da API interrompe a operação antes da transação de escrita.
+3. O código calcula `unit_price`, `subtotal = unit_price × quantity` e `total` com `Decimal`. A precisão é de duas casas, com `ROUND_HALF_UP`, em conformidade com os campos `NUMERIC`; valores acima da capacidade das colunas são rejeitados. Desconto, frete, tributos e câmbio não são inferidos.
+4. Cabeçalho, chave, fingerprint, preços, subtotais e itens são gravados numa única transação `sessionmaker.begin()`. Uma falha desfaz todos os inserts. A resposta só é retornada após o commit.
+5. A chave possui índice único no PostgreSQL. Tentativas concorrentes são reconciliadas pela restrição de unicidade e uma nova leitura. A mesma chave com outro título, solicitante, produto ou quantidade gera `idempotency_conflict`; a ordem dos itens não altera a identidade da intenção.
+
+O resultado estruturado contém `request_id`, `request_number` (UUID único), `created_at`, `replayed`, `currency`, `items` e `total`. Cada item contém produto, nome e descrição da API, quantidade, preço unitário e subtotal. Os valores decimais são strings JSON. A moeda permanece `null`, pois a DummyJSON não a informa.
+
+Os modelos originais foram estendidos, preservando as duas tabelas. Novos campos são opcionais no esquema para manter os registros legados, mas sempre preenchidos nas gravações desta ferramenta. As linhas anteriores não recebem UUID, totais ou preços inventados. A migração preserva valores de moeda antigos; para novas linhas, remove o default BRL e permite `null`. A descrição dos itens passa de VARCHAR(255) para TEXT para preservar o conteúdo externo integral.
+
+### Falhas e segurança
+
+Além dos erros da integração já documentados, a criação retorna erros MCP com códigos `idempotency_conflict`, `invalid_amount`, `database_unavailable` ou `database_error`. Eles não incluem SQL, parâmetros, credenciais nem detalhes do driver. Em caso de falha de comunicação durante o commit, repita a chamada com a mesma chave: a leitura persistente reconcilia uma possível gravação já concluída. Os logs contêm apenas tipo de falha, contagem e indicador de repetição, sem solicitante, título, itens, preços, totais ou chave de idempotência.
+
+Os preços vêm exclusivamente da API e são guardados como snapshot; não há aceitação de preços do LLM, nem SQL construído a partir dos argumentos. O endpoint MCP é publicado somente em `127.0.0.1` no host, e os serviços continuam se comunicando pela rede interna. Esta configuração local ainda não tem autenticação ou autorização por usuário: `requester_name` é um dado informado, não uma identidade verificada. A exposição remota e o futuro agente precisam de um controle de acesso confiável; a chave de idempotência não substitui autenticação.
+
 ## Validar a criação das tabelas
 
 Com os valores padrão, execute os comandos abaixo. Caso tenha alterado `POSTGRES_USER` ou `POSTGRES_DB`, substitua os argumentos `-U` e `-d` pelos valores configurados.
@@ -214,10 +283,18 @@ A consulta deve retornar exatamente as duas tabelas esperadas no schema `public`
 
 Devem existir:
 
-- `purchase_requests`: `id`, `title`, `requester_name`, `currency` e `created_at` com fuso horário.
-- `purchase_request_items`: `id`, `purchase_request_id`, `product_id` opcional, `description`, `quantity` e `unit_price`.
+- `purchase_requests`: campos originais e `request_number`, `idempotency_key`, `request_fingerprint` e `total_amount`.
+- `purchase_request_items`: campos originais e `product_name` e `subtotal`.
+- `purchase_schema_migrations`: controle das migrações executadas. A consulta filtrada acima continua retornando apenas as duas tabelas de negócio.
 
-Confira que `unit_price` é `numeric(14,2)`, que a chave estrangeira aponta para `purchase_requests(id)` com `ON DELETE CASCADE` e que existem restrições para quantidade positiva e preço não negativo. No Python, o preço usa `Decimal`; não há cálculos monetários com `float`. Os modelos apenas definem a estrutura de armazenamento, sem operações de compra ou endpoints CRUD.
+Confira `unit_price` como `numeric(14,2)`, `subtotal` e `total_amount` como `numeric(20,2)`, a chave estrangeira com `ON DELETE CASCADE` e as restrições de quantidade positiva e preço não negativo. Para inspecionar as gravações sem exibir nomes de solicitantes:
+
+```powershell
+docker compose exec postgres psql -U purchase_agent -d purchase_agent -c 'SELECT request_number, total_amount, currency FROM purchase_requests ORDER BY id DESC LIMIT 10;'
+docker compose exec postgres psql -U purchase_agent -d purchase_agent -c 'SELECT purchase_request_id, product_id, quantity, unit_price, subtotal FROM purchase_request_items ORDER BY id DESC LIMIT 10;'
+```
+
+Adapte `-U` e `-d` se alterar `POSTGRES_USER` e `POSTGRES_DB`.
 
 ## Persistência e reinicialização
 
@@ -233,11 +310,11 @@ Repita os comandos de inspeção das tabelas. `docker compose down` preserva o v
 ## Organização e dependências
 
 - `compose.yaml`: quatro serviços e volume persistente na rede padrão.
-- `backend/app/core/`: configuração por ambiente.
-- `backend/app/database.py`: engine, inicialização e sessões por requisição.
-- `backend/app/models/`: modelos SQLAlchemy 2 e registro dos metadados.
+- `shared/purchase_storage/`: modelos e configuração compartilhados, engine e migrações SQL versionadas.
+- `backend/app/core/` e `backend/app/models/`: imports compatíveis do pacote compartilhado.
+- `backend/app/database.py`: dependência de sessão FastAPI e reexportação da infraestrutura compartilhada.
 - `backend/app/api/`, `services/`, `schemas/`: rotas e camadas de aplicação.
-- `mcp-server/purchase_mcp/`: transporte MCP, healthcheck, cliente HTTPX compartilhado, schemas, ferramentas de busca e detalhamento e cliente MCP de teste.
+- `mcp-server/purchase_mcp/`: transporte MCP, healthcheck, cliente HTTPX, schemas Pydantic, repositório, serviço transacional, três ferramentas e cliente MCP de teste.
 - `frontend/src/`: React, TypeScript e Vite; `frontend/nginx.conf`: arquivos estáticos, healthcheck e proxy.
 - Cada componente tem seu Dockerfile e arquivo de dependências. O frontend usa `package-lock.json` e `npm ci` em build de múltiplos estágios.
 
@@ -248,17 +325,33 @@ O backend utiliza `unittest` e `httpx` apenas nas dependências de teste. A part
 ```powershell
 python -m venv backend/.venv
 backend/.venv/Scripts/python.exe -m pip install -r backend/requirements-test.txt
+backend/.venv/Scripts/python.exe -m pip install -e ./shared
 cd backend
 .venv/Scripts/python.exe -m unittest discover -s tests -v
 ```
 
 Esses testes validam configuração, tentativas de conexão, criação idempotente, relacionamentos, restrições, declaração PostgreSQL de `NUMERIC` e falhas do healthcheck. Os testes de armazenamento usam SQLite em memória; não substituem a validação real do PostgreSQL via Compose descrita acima.
 
-Para o MCP, instale suas dependências em um ambiente próprio e execute `python -m unittest discover -s tests -v` dentro de `mcp-server`.
+Para o MCP, instale suas dependências e o pacote compartilhado em um ambiente próprio. A partir da raiz:
+
+```powershell
+python -m venv mcp-server/.venv
+mcp-server/.venv/Scripts/python.exe -m pip install -r mcp-server/requirements.txt -e ./shared
+cd mcp-server
+.venv/Scripts/python.exe -m unittest discover -s tests -v
+```
 
 Os testes do MCP usam HTTPX MockTransport para simular falhas e validar o contrato, sem depender da disponibilidade da DummyJSON. A descoberta e as chamadas são testadas com o cliente oficial MCP via ASGI/Streamable HTTP. Para validar a consulta externa real e a rede TCP, execute o cliente de teste contra o container conforme os comandos acima.
 
-O conjunto cobre regressão da busca, descoberta das duas ferramentas, preço decimal, campos opcionais ausentes, IDs inválidos, HTTP 404, timeout, falha de rede, respostas inválidas e divergência entre o ID solicitado e o retornado. Nenhum teste exige remover volumes do PostgreSQL.
+O conjunto cobre regressão do catálogo, descoberta das três ferramentas, preços decimais, entradas inválidas, erros da API, criação, rejeição de preços do chamador, idempotência, conflito e rollback de cabeçalho e itens.
+
+Há também um teste explícito com PostgreSQL real, MCP sobre TCP e DummyJSON real. Execute na raiz com PostgreSQL e MCP iniciados:
+
+```powershell
+Get-Content -Raw mcp-server/tests/integration_postgres.py | docker compose exec -T mcp-server python -
+```
+
+Ele cria um banco temporário com nome aleatório, simula o esquema anterior com dados legados, valida a migração e a criação pelo protocolo, força uma corrida de unicidade entre threads e verifica rollback por violação real de restrição. Ao terminar, remove somente esse banco temporário. O usuário PostgreSQL de teste precisa de permissão CREATEDB (disponível no usuário local padrão do Compose). O teste depende de acesso à DummyJSON; os testes unitários não. Nenhum teste remove volumes ou dados do banco da aplicação.
 
 Para o frontend: `cd frontend`, `npm.cmd ci` e `npm.cmd run build`. No Linux/macOS, use `npm`. Node.js 22.12+ ou 24+ é necessário. Para desenvolvimento local do frontend, `npm.cmd run dev`; o proxy Nginx está disponível na versão Docker.
 
@@ -270,3 +363,5 @@ Para o frontend: `cd frontend`, `npm.cmd ci` e `npm.cmd run build`. No Linux/mac
 - [SDK oficial MCP para Python, linha v1](https://github.com/modelcontextprotocol/python-sdk/tree/v1.x)
 - [DummyJSON: produtos e busca](https://dummyjson.com/docs/products)
 - [HTTPX: timeouts](https://www.python-httpx.org/advanced/timeouts/)
+- [SQLAlchemy: transações de sessão](https://docs.sqlalchemy.org/en/20/orm/session_transaction.html)
+- [PostgreSQL: advisory locks](https://www.postgresql.org/docs/17/explicit-locking.html#ADVISORY-LOCKS)

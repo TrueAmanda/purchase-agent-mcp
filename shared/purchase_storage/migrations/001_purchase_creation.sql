@@ -1,0 +1,11 @@
+ALTER TABLE purchase_requests ADD COLUMN IF NOT EXISTS request_number VARCHAR(36);
+ALTER TABLE purchase_requests ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(128);
+ALTER TABLE purchase_requests ADD COLUMN IF NOT EXISTS request_fingerprint VARCHAR(64);
+ALTER TABLE purchase_requests ADD COLUMN IF NOT EXISTS total_amount NUMERIC(20, 2);
+ALTER TABLE purchase_requests ALTER COLUMN currency DROP NOT NULL;
+ALTER TABLE purchase_requests ALTER COLUMN currency DROP DEFAULT;
+ALTER TABLE purchase_request_items ADD COLUMN IF NOT EXISTS product_name VARCHAR(255);
+ALTER TABLE purchase_request_items ADD COLUMN IF NOT EXISTS subtotal NUMERIC(20, 2);
+ALTER TABLE purchase_request_items ALTER COLUMN description TYPE TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_purchase_requests_request_number ON purchase_requests (request_number);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_purchase_requests_idempotency_key ON purchase_requests (idempotency_key);

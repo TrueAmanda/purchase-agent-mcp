@@ -1,7 +1,5 @@
-"""Shared SQLAlchemy model metadata."""
+"""Compatibility import for the shared model metadata."""
 
-from sqlalchemy.orm import DeclarativeBase
+from purchase_storage.models import Base
 
-
-class Base(DeclarativeBase):
-    pass
+__all__ = ["Base"]

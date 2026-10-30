@@ -3,18 +3,25 @@
 import unittest
 from contextlib import asynccontextmanager
 from unittest.mock import patch
+from uuid import uuid4
 
 import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from purchase_storage import Base, PurchaseRequest
 
 from fixtures import search_payload
 from purchase_mcp.server import create_server
+from purchase_mcp.repositories.purchase_requests import PurchaseRequestRepository
 
 
 class ServerTests(unittest.IsolatedAsyncioTestCase):
     @asynccontextmanager
-    async def connected_session(self, handler):
+    async def connected_session(self, handler, repository=None):
         clients = []
 
         def create_api_client(timeout_seconds):
@@ -26,7 +33,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             return client
 
         with patch("purchase_mcp.server.create_http_client", side_effect=create_api_client):
-            app = create_server().streamable_http_app()
+            app = create_server(repository).streamable_http_app()
 
             async with app.router.lifespan_context(app):
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as mcp_client:
@@ -45,7 +52,14 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         ) as session:
             tools = await session.list_tools()
             discovered = {tool.name: tool for tool in tools.tools}
-            self.assertEqual(set(discovered), {"buscar_produtos", "detalhar_produto"})
+            self.assertEqual(set(discovered), {"buscar_produtos", "detalhar_produto", "criar_requisicao"})
+            creation = discovered["criar_requisicao"]
+            self.assertFalse(creation.annotations.readOnlyHint)
+            self.assertTrue(creation.annotations.idempotentHint)
+            self.assertEqual(creation.inputSchema["required"], ["request"])
+            contract = creation.inputSchema["$defs"]["PurchaseRequestInput"]
+            self.assertFalse(contract["additionalProperties"])
+            self.assertNotIn("price", contract["properties"])
             tool = discovered["buscar_produtos"]
             self.assertEqual(tool.inputSchema["required"], ["termo"])
             self.assertEqual(set(tool.inputSchema["properties"]), {"termo"})
@@ -58,6 +72,55 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(product["id"], 1)
             self.assertEqual(product["name"], "Test fixture product")
             self.assertEqual(product["price"], "19.99")
+
+    async def test_purchase_creation_and_retry_over_official_mcp_client(self):
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+        Base.metadata.create_all(engine)
+        sessions = sessionmaker(bind=engine, expire_on_commit=False)
+        calls = []
+
+        def handler(request):
+            calls.append(request)
+            return httpx.Response(200, json=search_payload()["products"][0])
+
+        data = {"title": "Test", "requester_name": "Test", "idempotency_key": str(uuid4()),
+                "items": [{"product_id": 1, "quantity": 2}]}
+        try:
+            async with self.connected_session(handler, PurchaseRequestRepository(sessions)) as session:
+                first = await session.call_tool("criar_requisicao", {"request": data})
+                self.assertFalse(first.isError, first.model_dump_json())
+                result = first.structuredContent
+                self.assertEqual(result["total"], "39.98")
+                self.assertEqual(result["items"][0]["unit_price"], "19.99")
+                self.assertFalse(result["replayed"])
+                repeated = await session.call_tool("criar_requisicao", {"request": data})
+                self.assertFalse(repeated.isError, repeated.model_dump_json())
+                self.assertTrue(repeated.structuredContent["replayed"])
+                self.assertEqual(repeated.structuredContent["request_number"], result["request_number"])
+            self.assertEqual(len(calls), 1)
+            with sessions() as session:
+                self.assertEqual(session.scalar(select(func.count()).select_from(PurchaseRequest)), 1)
+        finally:
+            engine.dispose()
+
+    async def test_purchase_rejects_invalid_arguments_and_llm_prices(self):
+        data = {"title": "Test", "requester_name": "Test", "idempotency_key": str(uuid4()),
+                "items": [{"product_id": 1, "quantity": 2}]}
+
+        def handler(request):
+            self.fail("Invalid purchase inputs must not reach the product API.")
+
+        async with self.connected_session(handler) as session:
+            for invalid in (
+                {**data, "items": []}, {**data, "total": "0.01"},
+                {**data, "items": [{"product_id": 1, "quantity": 0}]},
+                {**data, "items": [{"product_id": 1, "quantity": 1, "price": "0.01"}]},
+            ):
+                with self.subTest(invalid=invalid):
+                    result = await session.call_tool("criar_requisicao", {"request": invalid})
+                    self.assertTrue(result.isError)
+                    self.assertIsNone(result.structuredContent)
+                    self.assertNotIn("not configured", result.content[0].text)
 
     async def test_detail_discovery_and_structured_result(self):
         async with self.connected_session(

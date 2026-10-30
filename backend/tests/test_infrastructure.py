@@ -91,17 +91,17 @@ class DatabaseTests(unittest.TestCase):
         engine.connect.side_effect = [
             OperationalError("SELECT 1", {}, Exception("offline")), connection
         ]
-        with patch("app.database.time.sleep") as sleep, patch.object(Base.metadata, "create_all") as create:
+        with patch("purchase_storage.database.time.sleep") as sleep, patch.object(Base.metadata, "create_all") as create:
             initialize_database(engine, self.settings)
         self.assertEqual(engine.connect.call_count, 2)
         sleep.assert_called_once()
-        create.assert_called_once_with(engine)
+        create.assert_called_once_with(engine.begin.return_value.__enter__.return_value)
 
     def test_retry_exhaustion_does_not_create_tables(self):
         engine = MagicMock()
         engine.connect.side_effect = OperationalError("SELECT 1", {}, Exception("secret"))
         settings = Settings(self.settings.database_url, 2, 0)
-        with patch("app.database.time.sleep"), patch.object(Base.metadata, "create_all") as create:
+        with patch("purchase_storage.database.time.sleep"), patch.object(Base.metadata, "create_all") as create:
             with self.assertRaisesRegex(RuntimeError, "Database unavailable") as context:
                 initialize_database(engine, settings)
         self.assertEqual(engine.connect.call_count, 2)

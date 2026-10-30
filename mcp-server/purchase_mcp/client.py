@@ -2,7 +2,10 @@
 
 import argparse
 import asyncio
+import json
 import os
+import sys
+from pathlib import Path
 from typing import Any
 
 from mcp import ClientSession
@@ -26,11 +29,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("term", nargs="?", help="Product search term.")
     parser.add_argument("--id", type=int, dest="product_id", help="Fetch details for a product ID.")
+    parser.add_argument("--create", dest="request_file", help="Create from a UTF-8 JSON request file, or '-' for stdin.")
     parser.add_argument("--url", default=os.getenv("MCP_SERVER_URL", "http://localhost:8001/mcp"))
     arguments = parser.parse_args()
-    if (arguments.term is None) == (arguments.product_id is None):
-        parser.error("Provide either a search term or --id, but not both.")
-    if arguments.product_id is not None:
+    if sum(value is not None for value in (arguments.term, arguments.product_id, arguments.request_file)) != 1:
+        parser.error("Provide exactly one of: a search term, --id, or --create.")
+    if arguments.request_file is not None:
+        try:
+            content = sys.stdin.read() if arguments.request_file == "-" else Path(arguments.request_file).read_text(encoding="utf-8-sig")
+            request = json.loads(content.lstrip("\ufeff"))
+        except (OSError, ValueError):
+            parser.exit(2, "Unable to read a valid UTF-8 JSON purchase request.\n")
+        tool_name, tool_arguments = "criar_requisicao", {"request": request}
+    elif arguments.product_id is not None:
         tool_name, tool_arguments = "detalhar_produto", {"id": arguments.product_id}
     else:
         tool_name, tool_arguments = "buscar_produtos", {"termo": arguments.term}

@@ -1,1 +1,1 @@
-"""MCP tools: buscar_produtos and detalhar_produto."""
+"""MCP catalog tools and idempotent purchase request creation."""
