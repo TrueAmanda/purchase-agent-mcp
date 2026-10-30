@@ -1,0 +1,59 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+credentials*.json
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.Python
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+# JavaScript
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/cache/
+.vite/
+coverage/
+*.tsbuildinfo
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+# Local artifacts
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.bak
+*.sqlite
+*.sqlite3
+*.db
+postgres-data/

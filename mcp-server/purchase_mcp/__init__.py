@@ -1,0 +1,1 @@
+"""Independent purchase MCP server."""
