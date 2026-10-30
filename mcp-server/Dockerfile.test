@@ -1,0 +1,10 @@
+FROM python:3.12-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /app
+COPY shared /opt/purchase-storage
+COPY mcp-server/requirements.txt mcp-server/requirements-test.txt ./
+RUN pip install --no-cache-dir /opt/purchase-storage -r requirements-test.txt
+COPY mcp-server/purchase_mcp ./purchase_mcp
+COPY mcp-server/pytest.ini .
+COPY mcp-server/tests ./tests
+CMD ["python", "-m", "pytest", "-q"]

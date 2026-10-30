@@ -332,26 +332,70 @@ cd backend
 
 Esses testes validam configuração, tentativas de conexão, criação idempotente, relacionamentos, restrições, declaração PostgreSQL de `NUMERIC` e falhas do healthcheck. Os testes de armazenamento usam SQLite em memória; não substituem a validação real do PostgreSQL via Compose descrita acima.
 
-Para o MCP, instale suas dependências e o pacote compartilhado em um ambiente próprio. A partir da raiz:
+### Suíte Pytest do servidor MCP
+
+Os testes do MCP usam Pytest, HTTPX MockTransport e o plugin assíncrono do AnyIO (já utilizado pelo SDK). Eles não precisam de OpenRouter, chaves de LLM, serviços de desenvolvimento ou acesso à DummyJSON. Os contratos públicos das três ferramentas foram preservados.
+
+Na raiz do repositório, prepare um ambiente Python 3.12 uma vez:
 
 ```powershell
 python -m venv mcp-server/.venv
-mcp-server/.venv/Scripts/python.exe -m pip install -r mcp-server/requirements.txt -e ./shared
-cd mcp-server
-.venv/Scripts/python.exe -m unittest discover -s tests -v
+mcp-server/.venv/Scripts/python.exe -m pip install -r mcp-server/requirements-test.txt -e ./shared
 ```
 
-Os testes do MCP usam HTTPX MockTransport para simular falhas e validar o contrato, sem depender da disponibilidade da DummyJSON. A descoberta e as chamadas são testadas com o cliente oficial MCP via ASGI/Streamable HTTP. Para validar a consulta externa real e a rede TCP, execute o cliente de teste contra o container conforme os comandos acima.
-
-O conjunto cobre regressão do catálogo, descoberta das três ferramentas, preços decimais, entradas inválidas, erros da API, criação, rejeição de preços do chamador, idempotência, conflito e rollback de cabeçalho e itens.
-
-Há também um teste explícito com PostgreSQL real, MCP sobre TCP e DummyJSON real. Execute na raiz com PostgreSQL e MCP iniciados:
+Execute toda a suíte local com um comando:
 
 ```powershell
-Get-Content -Raw mcp-server/tests/integration_postgres.py | docker compose exec -T mcp-server python -
+mcp-server/.venv/Scripts/python.exe -m pytest mcp-server -q
 ```
 
-Ele cria um banco temporário com nome aleatório, simula o esquema anterior com dados legados, valida a migração e a criação pelo protocolo, força uma corrida de unicidade entre threads e verifica rollback por violação real de restrição. Ao terminar, remove somente esse banco temporário. O usuário PostgreSQL de teste precisa de permissão CREATEDB (disponível no usuário local padrão do Compose). O teste depende de acesso à DummyJSON; os testes unitários não. Nenhum teste remove volumes ou dados do banco da aplicação.
+Com o ambiente ativado, basta `python -m pytest mcp-server -q`. No Linux/macOS, o executável do ambiente é `mcp-server/.venv/bin/python`.
+
+O modo local usa um arquivo SQLite temporário novo para cada teste, com chaves estrangeiras habilitadas e suporte a múltiplas conexões. Apenas o teste de migração SQL específico de PostgreSQL é pulado nesse modo. A criação, os cálculos, as restrições, o rollback, a concorrência e as chamadas MCP são executados normalmente.
+
+Para executar **todos os cenários com PostgreSQL real**, use um único comando na raiz:
+
+```powershell
+docker compose -f compose.test.yaml up --build --abort-on-container-exit --exit-code-from mcp-tests
+```
+
+O código de saída é o do Pytest: `0` indica sucesso. Mensagens PostgreSQL de violação de CHECK ou chave única são esperadas nos cenários que forçam rollback e concorrência; confira o resultado final do Pytest. A primeira construção da imagem e o download das dependências precisam de rede; a execução dos testes não usa serviços externos. A imagem de testes usa `Dockerfile.test` e dependências separadas; a imagem de execução do servidor continua sem Pytest.
+
+Esse Compose é independente do `compose.yaml` de desenvolvimento. Ele possui projeto, serviços e rede próprios, não publica portas, não lê credenciais de aplicação e não monta volumes de desenvolvimento. O PostgreSQL guarda seus dados em `tmpfs`; a rede de teste é interna, sem saída para a internet. As credenciais fixas do arquivo são exclusivas desse banco descartável de teste.
+
+Os containers de teste param ao término da suíte. Para remover somente esses containers e a rede de teste:
+
+```powershell
+docker compose -f compose.test.yaml down
+```
+
+Não é necessário nem utilizado `down -v`. Nenhum comando dessa suíte remove volumes da aplicação.
+
+### Organização e cobertura
+
+| Arquivo | Cenários |
+| --- | --- |
+| `tests/conftest.py` | Produtos de exemplo exclusivos dos testes, HTTPX MockTransport, bloqueio de HTTP externo, remoção de variáveis LLM, banco isolado e clientes MCP oficiais |
+| `tests/test_product_search.py` | Resultados exatos da resposta simulada, ausência de resultados, termos inválidos, timeout, erros HTTP/rede e payloads inválidos |
+| `tests/test_product_details.py` | Campos e tipos do produto, opcionais ausentes sem valores inventados, IDs inválidos, 404, divergência de ID e falhas externas |
+| `tests/test_create_request.py` | Um ou múltiplos itens, quantidades, campos extras, preços do chamador rejeitados, Decimal, limites de armazenamento, persistência/relacionamentos, rollback e idempotência |
+| `tests/test_mcp_integration.py` | Descoberta das três ferramentas com o SDK oficial, schemas JSON de entrada/saída, chamadas ASGI e TCP, erros MCP, persistência e ausência de gravações parciais |
+| `tests/test_persistence.py` | Inicialização repetível, migração PostgreSQL preservando dados legados e duas tentativas simultâneas reconciliadas pela restrição única |
+| `tests/test_configuration.py` | Timeout, bloqueio de chamadas não simuladas e rejeição de URLs de banco de desenvolvimento |
+
+Cada teste recebe cópias independentes dos dados e um banco ou schema novo. A chave de idempotência da fixture é fixa para tornar os dados reproduzíveis, sem colisão entre testes. A disputa concorrente é coordenada por uma barreira; o teste não depende de qual thread vence.
+
+O modo PostgreSQL usa apenas `TEST_DATABASE_URL`, aceita somente o driver `postgresql+psycopg` e o banco `purchase_mcp_test`, e cria um schema privado com nome aleatório para cada teste. Ao terminar, remove apenas esse schema. Não há fallback para `DATABASE_URL` ou `POSTGRES_*` de desenvolvimento. As chamadas HTTP externas não simuladas falham imediatamente.
+
+O teste TCP inicia um servidor MCP local em uma porta livre e usa `ClientSession`/`streamable_http_client` do SDK oficial. Ele executa `initialize`, `tools/list` e `tools/call`, valida os schemas JSON e verifica os dados gravados. A DummyJSON continua simulada mesmo nesse teste. Não há LLM no processo.
+
+### Limitações dos testes
+
+- O modo SQLite não valida o dialeto e as migrações PostgreSQL; execute o Compose de testes para essa cobertura.
+- As respostas externas são simuladas, portanto a suíte não detecta mudanças não representadas nas fixtures nem mede a disponibilidade da DummyJSON real.
+- Não há testes de carga, tolerância a falhas do host ou autenticação; as verificações de concorrência cobrem duas gravações simultâneas com a mesma chave.
+
+Os testes antigos do MCP em `unittest` e o script dependente da DummyJSON real foram substituídos pela suíte Pytest. Os testes do backend permanecem no fluxo independente descrito acima.
 
 Para o frontend: `cd frontend`, `npm.cmd ci` e `npm.cmd run build`. No Linux/macOS, use `npm`. Node.js 22.12+ ou 24+ é necessário. Para desenvolvimento local do frontend, `npm.cmd run dev`; o proxy Nginx está disponível na versão Docker.
 
@@ -365,3 +409,5 @@ Para o frontend: `cd frontend`, `npm.cmd ci` e `npm.cmd run build`. No Linux/mac
 - [HTTPX: timeouts](https://www.python-httpx.org/advanced/timeouts/)
 - [SQLAlchemy: transações de sessão](https://docs.sqlalchemy.org/en/20/orm/session_transaction.html)
 - [PostgreSQL: advisory locks](https://www.postgresql.org/docs/17/explicit-locking.html#ADVISORY-LOCKS)
+- [Pytest: fixtures](https://docs.pytest.org/en/stable/how-to/fixtures.html)
+- [AnyIO: plugin de testes assíncronos](https://anyio.readthedocs.io/en/stable/testing.html)
