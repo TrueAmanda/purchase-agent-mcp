@@ -12,7 +12,7 @@ from referencing import Registry
 from app.core.agent_config import AgentSettings
 from app.core.agent_errors import AgentError
 from app.core.agent_prompt import build_system_prompt
-from app.schemas.agent import AgentResult, ToolCall, ToolDefinition
+from app.schemas.agent import AgentResult, ToolCall, ToolDefinition, ToolExecutionEvent
 from app.services.agent_tools import EmptyToolProvider, ToolProvider
 from app.services.openrouter import OpenRouterClient
 
@@ -66,12 +66,13 @@ class AgentService:
         prompt = build_system_prompt(tools_available=bool(definitions))
         messages = [{"role": "system", "content": prompt}, {"role": "user", "content": message}]
         executed = 0
+        events = []
         seen_call_ids = set()
         for iteration in range(1, self.settings.max_iterations + 1):
             reply = await self.llm.complete(messages, definitions)
             logger.info("agent_round iteration=%d requested_tools=%d", iteration, len(reply.tool_calls))
             if not reply.tool_calls:
-                return AgentResult(content=reply.content, iterations=iteration, tool_calls=executed)
+                return AgentResult(content=reply.content, iterations=iteration, tool_calls=executed, tool_events=events)
             if len(reply.tool_calls) > self.settings.max_tool_calls_per_iteration:
                 raise AgentError("tool_call_limit")
             if any(call.id in seen_call_ids for call in reply.tool_calls):
@@ -83,12 +84,15 @@ class AgentService:
             # Multiple calls are processed in model order, without a fixed business flow.
             for call in reply.tool_calls:
                 seen_call_ids.add(call.id)
-                result = await self._execute_tool(call, validators)
+                result, event = await self._execute_tool(call, validators)
+                events.append(event)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
                 executed += 1
         raise AgentError("iteration_limit")
 
-    async def _execute_tool(self, call: ToolCall, validators: dict[str, Draft202012Validator]) -> str:
+    async def _execute_tool(
+        self, call: ToolCall, validators: dict[str, Draft202012Validator],
+    ) -> tuple[str, ToolExecutionEvent]:
         started = perf_counter()
         outcome = "ok"
         result: dict[str, Any]
@@ -120,5 +124,9 @@ class AgentService:
             content = json.dumps(result)
         # Never log tool names/IDs/arguments/results: these may contain sensitive data.
         logger.info("agent_tool outcome=%s duration_ms=%.1f", outcome, (perf_counter() - started) * 1000)
-        return content
+        event = ToolExecutionEvent(
+            name=call.function.name if call.function.name in validators else "unknown_tool",
+            outcome=outcome, result=result if outcome == "ok" else None,
+        )
+        return content, event
 

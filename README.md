@@ -45,9 +45,145 @@ No Compose, backend e MCP recebem os mesmos campos de conexão do PostgreSQL; a 
 
 `OPENROUTER_API_KEY` e `OPENROUTER_MODEL` são necessários somente ao invocar o agente. O backend e seus healthchecks continuam iniciando sem chave LLM. `VITE_API_BASE_URL` continua reservado para a interface futura. Nenhum segredo é enviado ao build do frontend. O proxy `/api/` já está configurado no Nginx.
 
+## API de requisições de compra
+
+Os endpoints estão em `backend/app/api/routes/purchase_requests.py`, com schemas em `schemas/purchase_requests.py` e orquestração/leitura em `services/purchase_requests.py`. A documentação interativa fica em **http://localhost:8000/docs** e o contrato OpenAPI em **http://localhost:8000/openapi.json**. Ambos descrevem os modelos, a validação e os códigos de resposta.
+
+### POST /requisicoes
+
+Recebe uma mensagem em linguagem natural, com 1 a 20.000 caracteres após remover espaços das extremidades. Strings vazias, tipos incorretos e campos extras são rejeitados com HTTP 422. O corpo é validado antes de verificar as credenciais do provedor.
+
+```json
+{
+  "message": "Preciso de 3 teclados com orçamento total de 300 reais.",
+  "include_tool_trace": false
+}
+```
+
+O POST chama o serviço de agente existente. A dependência cria um cliente HTTPX por requisição, reutilizado durante as rodadas do agente e fechado ao terminar. A configuração OpenRouter é carregada nesse momento: GET, healthcheck e inicialização não exigem chave LLM.
+
+Exemplo de resposta **HTTP 200**, sem registro de compra:
+
+```json
+{
+  "status": "response",
+  "message": "Quais equipamentos você precisa?",
+  "requisitions": [],
+  "tool_trace": null
+}
+```
+
+| `status` | Significado |
+| --- | --- |
+| `response` | Resposta sem confirmação de gravação: esclarecimento, planejamento, recusa, ferramentas ausentes ou candidatos que não atendem ao pedido |
+| `no_results` | As buscas executadas retornaram catálogo vazio com sucesso, sem outros candidatos ou detalhamento bem-sucedido; não é inferido do texto do LLM |
+| `created` | Há pelo menos uma confirmação estruturada de `criar_requisicao` correspondente a um registro realmente persistido |
+
+O executor coleta evidências internas das ferramentas, separadas do texto do assistente. O serviço valida `request_id`, `request_number` UUID e `replayed` no retorno de criação, consulta os modelos SQLAlchemy compartilhados e exige correspondência entre ID e número. Os itens e os valores da resposta são lidos do banco, inclusive quando o retorno da ferramenta contém valores diferentes. Recibos inválidos, registros ausentes ou marcadores de erro nunca confirmam uma criação.
+
+**Nenhuma rota ou serviço do backend grava requisições ou itens.** A gravação continua exclusiva da ferramenta MCP `criar_requisicao`; não há `INSERT`, `UPDATE` nem geração de número no POST. O agente mantém a decisão sobre quais ferramentas chamar. `message` é texto do agente, não prova de registro: o frontend deve usar `status` e `requisitions`, sem extrair números ou totais da narrativa.
+
+Uma nova gravação confirmada retorna **HTTP 201**. Se todas as confirmações forem replays idempotentes, retorna **HTTP 200**, com `replayed: true`. Chamadas repetidas da mesma requisição aparecem uma vez; múltiplas requisições confirmadas podem aparecer na lista. `created` confirma os registros listados, não garante que toda a intenção de compra tenha sido atendida.
+
+Exemplo ilustrativo de resposta 201, usando o registro sintético dos testes (não representa uma compra real):
+
+```json
+{
+  "status": "created",
+  "message": "Registro confirmado pela ferramenta.",
+  "requisitions": [
+    {
+      "id": 1,
+      "request_number": "11111111-1111-4111-8111-111111111111",
+      "status": "registered",
+      "title": "Office",
+      "requester_name": "Fixture requester",
+      "created_at": "2026-01-01T00:00:00Z",
+      "currency": null,
+      "total": "59.97",
+      "items": [
+        {
+          "id": 1,
+          "product_id": "1",
+          "name": "Fixture keyboard",
+          "description": "Fixture description",
+          "quantity": 3,
+          "unit_price": "19.99",
+          "subtotal": "59.97"
+        }
+      ],
+      "replayed": false
+    }
+  ],
+  "tool_trace": [
+    {"name": "criar_requisicao", "status": "success", "code": null}
+  ]
+}
+```
+
+`tool_trace` é opcional: fica `null` por padrão e é preenchido somente com `include_tool_trace: true`. Expõe nome, resultado geral (`success`, `error`, `timeout`) e código seguro, sem argumentos, resultados brutos, raciocínio ou credenciais. O histórico interno não altera a serialização existente da CLI.
+
+**Limite desta etapa:** o adaptador real MCP ainda não está conectado ao agente. Assim, o POST real usa OpenRouter sem ferramentas e retorna respostas sem compras registradas. Os caminhos de criação e busca vazia estão preparados e testados com o agente simulado; não são simulados em produção. O GET já lê registros reais, inclusive os gravados anteriormente pelo cliente MCP.
+
+### GET /requisicoes
+
+Lê o PostgreSQL pelos modelos compartilhados, sem consultar LLM ou DummyJSON. Aceita `limit` de 1 a 100 (padrão 50) e `offset` não negativo (padrão 0). Ordena por data e ID decrescentes, com carregamento dos itens sem consultas individuais por requisição. Uma lista vazia é HTTP 200:
+
+```json
+{
+  "requisitions": [],
+  "limit": 50,
+  "offset": 0,
+  "has_more": false
+}
+```
+
+Cada elemento de `requisitions` possui os campos do registro ilustrativo acima, exceto `replayed`, que depende do contexto da execução do agente. `status: registered` significa somente que o registro existe no banco; não é um fluxo de aprovação. Valores monetários são strings decimais. Campos de registros antigos continuam `null` quando ausentes; o backend não calcula valores faltantes nem assume moeda. O identificador de produto é uma string ou `null`, conforme o modelo SQLAlchemy original.
+
+### Erros e validação manual da API
+
+| HTTP | Situações |
+| --- | --- |
+| 422 | JSON inválido, mensagem vazia/tipo incorreto/campos extras ou paginação inválida; formato padrão `detail` do FastAPI |
+| 500 | Erro de consulta ao banco ou dados persistidos incompatíveis com o contrato |
+| 502 | Resposta LLM inválida/interrompida, limites do agente, falha de ferramenta ou criação sem confirmação válida |
+| 503 | Banco indisponível, configuração LLM ausente/inválida, chave/saldo/rate limit do provedor ou catálogo de ferramentas indisponível |
+| 504 | Timeout do agente, do provedor ou de uma ferramenta |
+
+Credenciais rejeitadas pelo provedor geram 503, pois são configuração do servidor, não autenticação do usuário desta API. Erros de aplicação usam um contrato seguro, sem SQL, corpo do provedor ou texto bruto da exceção:
+
+```json
+{
+  "detail": {
+    "code": "database_unavailable",
+    "message": "Unable to read persisted purchase requisitions."
+  }
+}
+```
+
+Timeout ou erro depois de uma possível escrita não prova que nada foi salvo. Não há retry automático; confira `GET /requisicoes` antes de repetir a intenção de compra. O próximo adaptador MCP deverá preservar a chave de idempotência nas tentativas. Se o LLM falhar depois de uma ferramenta concluir, o POST pode retornar erro; o registro continua consultável pelo GET.
+
+Para iniciar a versão atualizada e testar com PowerShell na raiz:
+
+```powershell
+docker compose up --build -d
+Invoke-RestMethod -Uri "http://localhost:8000/requisicoes?limit=10&offset=0"
+$purchaseBody = @{ message = "Preciso comprar equipamentos para o escritório."; include_tool_trace = $true } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://localhost:8000/requisicoes" -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($purchaseBody))
+```
+
+O POST real consome créditos OpenRouter; mantenha chave e modelo apenas no `.env`. GET não precisa de chave LLM. Para ver status e schemas de cada endpoint, use `/docs`.
+
+Os testes em `backend/tests/test_purchase_requests_api.py` usam HTTPX ASGI, agente simulado e um arquivo SQLite temporário por teste, sem serviços externos ou dados de desenvolvimento. Cobrem respostas e códigos, validação, ausência de resultados, candidatos fora do orçamento, confirmação no banco, replay, múltiplos registros, valores reais persistidos, proteção contra texto/recibos inventados, trace sem dados sensíveis, erros de banco/provedor, campos legados e OpenAPI. Também exercitam o ciclo real do agente com HTTPX MockTransport e ferramentas simuladas. Guardas SQL fazem os testes falharem se o POST ou GET tentarem escrever no banco.
+
+```powershell
+.\mcp-server\.venv\Scripts\python.exe -m pytest backend/tests/test_purchase_requests_api.py -v
+.\mcp-server\.venv\Scripts\python.exe -m pytest -q
+```
+
 ## Núcleo do agente OpenRouter
 
-O serviço `backend/app/services/agent.py` recebe uma mensagem por `await AgentService.run(message)` e retorna `AgentResult(content, iterations, tool_calls)`. Ele não importa rotas FastAPI, modelos de banco nem o SDK MCP. O histórico é local a cada execução; não há memória compartilhada entre usuários ou persistência de conversas nesta etapa. Ainda não existe rota HTTP de chat.
+O serviço `backend/app/services/agent.py` recebe uma mensagem por `await AgentService.run(message)` e retorna `AgentResult(content, iterations, tool_calls)`, com evidências internas de execução excluídas da serialização. Ele não importa rotas FastAPI, modelos de banco nem o SDK MCP. O histórico é local a cada execução; não há memória compartilhada entre usuários ou persistência de conversas nesta etapa. `POST /requisicoes` disponibiliza essa orquestração HTTP.
 
 ```mermaid
 flowchart LR

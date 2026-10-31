@@ -46,8 +46,18 @@ class AssistantMessage(BaseModel):
         return message
 
 
+class ToolExecutionEvent(BaseModel):
+    """Executor evidence, never parsed from assistant text or exposed as raw trace."""
+
+    name: str
+    outcome: Literal["ok", "unknown_tool", "invalid_tool_arguments", "tool_timeout", "tool_execution_failed"]
+    result: dict[str, Any] | None = Field(default=None, exclude=True, repr=False)
+
+
 class AgentResult(BaseModel):
     content: str
     iterations: int
     tool_calls: int
+    # Internal evidence keeps the existing CLI serialization contract unchanged.
+    tool_events: list[ToolExecutionEvent] = Field(default_factory=list, exclude=True, repr=False)
 
