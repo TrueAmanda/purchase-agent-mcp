@@ -10,7 +10,7 @@ from jsonschema import Draft202012Validator
 from referencing import Registry
 
 from app.core.agent_config import AgentSettings
-from app.core.agent_errors import AgentError
+from app.core.agent_errors import AgentError, ToolExecutionError, TOOL_ERROR_MESSAGES
 from app.core.agent_prompt import build_system_prompt
 from app.schemas.agent import AgentResult, ToolCall, ToolDefinition, ToolExecutionEvent
 from app.services.agent_tools import EmptyToolProvider, ToolProvider
@@ -58,6 +58,8 @@ class AgentService:
                 # An empty registry forbids network retrieval of external $ref schemas.
                 validators[definition.name] = Draft202012Validator(definition.parameters, registry=Registry())
             return definitions, validators
+        except AgentError:
+            raise
         except Exception:
             raise AgentError("tool_catalog_error") from None
 
@@ -117,16 +119,32 @@ class AgentService:
                         raise ValueError
                 except TimeoutError:
                     outcome = "tool_timeout"
+                except ToolExecutionError as error:
+                    outcome = error.code
                 except Exception:
                     outcome = "tool_execution_failed"
         if outcome != "ok":
-            result = {"error": {"code": outcome, "message": "Tool execution was not confirmed; do not invent a result."}}
+            result = {"error": {"code": outcome, "message": TOOL_ERROR_MESSAGES.get(
+                outcome, "Tool execution was not confirmed; do not invent a result.",
+            )}}
             content = json.dumps(result)
-        # Never log tool names/IDs/arguments/results: these may contain sensitive data.
-        logger.info("agent_tool outcome=%s duration_ms=%.1f", outcome, (perf_counter() - started) * 1000)
+        duration_ms = round((perf_counter() - started) * 1000, 1)
+        # Only fixed capability names may enter logs; never args, bodies, or user text.
+        safe_name = call.function.name if call.function.name in {
+            "buscar_produtos", "detalhar_produto", "criar_requisicao",
+        } else "other_tool"
+        result_count = None
+        if outcome == "ok" and "error" not in result:
+            values = result.get("products", result.get("items"))
+            if isinstance(values, list):
+                result_count = len(values)
+            elif isinstance(result.get("product"), dict):
+                result_count = 1
+        logger.info("agent_tool name=%s outcome=%s result_count=%s duration_ms=%.1f", safe_name,
+                    "tool_error" if "error" in result and outcome == "ok" else outcome, result_count, duration_ms)
         event = ToolExecutionEvent(
             name=call.function.name if call.function.name in validators else "unknown_tool",
-            outcome=outcome, result=result if outcome == "ok" else None,
+            outcome=outcome, result=result if outcome == "ok" else None, duration_ms=duration_ms,
         )
         return content, event
 

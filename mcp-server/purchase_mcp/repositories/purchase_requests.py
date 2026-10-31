@@ -51,7 +51,7 @@ class PurchaseRequestRepository:
                     return existing
                 record = PurchaseRequest(
                     request_number=str(uuid4()), idempotency_key=key, request_fingerprint=fingerprint,
-                    title=request.title, requester_name=request.requester_name, currency=None,
+                    title=request.title, requester_name=request.requester_name, currency="USD",
                     total_amount=sum((item.subtotal for item in items), start=Decimal("0.00")),
                     items=[PurchaseRequestItem(
                         product_id=str(item.product_id), product_name=item.name, description=item.description,

@@ -50,7 +50,11 @@ class ToolExecutionEvent(BaseModel):
     """Executor evidence, never parsed from assistant text or exposed as raw trace."""
 
     name: str
-    outcome: Literal["ok", "unknown_tool", "invalid_tool_arguments", "tool_timeout", "tool_execution_failed"]
+    outcome: Literal[
+        "ok", "unknown_tool", "invalid_tool_arguments", "tool_timeout", "tool_execution_failed",
+        "mcp_unavailable", "invalid_tool_result",
+    ]
+    duration_ms: float = Field(default=0, ge=0)
     result: dict[str, Any] | None = Field(default=None, exclude=True, repr=False)
 
 

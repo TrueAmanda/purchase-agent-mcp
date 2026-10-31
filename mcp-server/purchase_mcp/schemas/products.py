@@ -13,6 +13,9 @@ class Product(BaseModel):
     id: int = Field(gt=0, strict=True)
     name: str = Field(validation_alias="title", min_length=1)
     price: Decimal = Field(ge=0, allow_inf_nan=False)
+    currency: Literal["USD"] = Field(
+        default="USD", description="Denomination fixed by project policy; no exchange-rate conversion.",
+    )
     description: str
     category: str | None = None
     brand: str | None = None

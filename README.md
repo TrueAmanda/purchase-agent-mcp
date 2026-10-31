@@ -1,6 +1,6 @@
 # purchase-agent-mcp
 
-Agente de compras em desenvolvimento com FastAPI, servidor MCP independente, PostgreSQL e React/TypeScript. As ferramentas MCP `buscar_produtos(termo)` e `detalhar_produto(id)` consultam a DummyJSON; `criar_requisicao(request)` valida os produtos e grava uma requisição de compra no PostgreSQL. O núcleo do agente OpenRouter já possui um ciclo dinâmico de tool calling, testado com ferramentas simuladas. A conexão real entre agente e MCP e a interface de compras ficam para as próximas etapas.
+Agente de compras em desenvolvimento com FastAPI, servidor MCP independente, PostgreSQL e React/TypeScript. As ferramentas MCP `buscar_produtos(termo)` e `detalhar_produto(id)` consultam a DummyJSON; `criar_requisicao(request)` valida os produtos e grava uma requisição de compra no PostgreSQL. O agente OpenRouter descobre e executa essas ferramentas pelo protocolo MCP, conforme as decisões do modelo. A interface de compras ainda não foi implementada.
 
 ## Iniciar com Docker Compose
 
@@ -36,7 +36,8 @@ A rede padrão do Compose permite resolver os nomes dos serviços por DNS. `loca
 - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`: banco, usuário e senha.
 - `BACKEND_PORT`, `MCP_PORT`, `FRONTEND_PORT`: portas publicadas no host. As portas internas permanecem fixas no Compose.
 - `DB_STARTUP_ATTEMPTS`, `DB_STARTUP_INTERVAL_SECONDS`: limite e intervalo das tentativas de conexão do backend.
-- `MCP_SERVER_URL`: o Compose fornece `http://mcp-server:8001/mcp` ao backend, reservado para a futura integração.
+- `MCP_SERVER_URL`: o Compose fornece `http://mcp-server:8001/mcp` ao backend pela rede interna. Fora do Docker, use `http://localhost:8001/mcp`.
+- `MCP_TIMEOUT_SECONDS`: limite de cada operação MCP, incluindo negociação e execução, padrão `15` segundos. O limite `AGENT_TOOL_TIMEOUT_SECONDS` também se aplica; prevalece o primeiro a expirar.
 - `PRODUCT_API_TIMEOUT_SECONDS`: timeout positivo e finito do HTTPX na consulta à DummyJSON, padrão `10` segundos para cada fase de I/O (conexão, leitura, escrita e espera pelo pool). Valores inválidos impedem a inicialização do servidor MCP.
 
 Os valores padrão são destinados ao desenvolvimento local: banco e usuário `purchase_agent`, senha de exemplo `purchase_local_only`. Substitua a senha em ambientes compartilhados. O `.env.example` não contém credenciais reais. Mantenha `.env` fora do Git. Valores vazios no `.env` usam os padrões definidos no Compose.
@@ -44,6 +45,16 @@ Os valores padrão são destinados ao desenvolvimento local: banco e usuário `p
 No Compose, backend e MCP recebem os mesmos campos de conexão do PostgreSQL; a URL é montada com `URL.create`, aceitando caracteres especiais na senha. `DATABASE_URL` é uma alternativa para executar esses processos fora do Compose, usando o formato `postgresql+psycopg://...`. Nesse caso, forneça as variáveis ao processo: os serviços não carregam `.env` automaticamente e o PostgreSQL precisa estar acessível fora da rede Docker.
 
 `OPENROUTER_API_KEY` e `OPENROUTER_MODEL` são necessários somente ao invocar o agente. O backend e seus healthchecks continuam iniciando sem chave LLM. `VITE_API_BASE_URL` continua reservado para a interface futura. Nenhum segredo é enviado ao build do frontend. O proxy `/api/` já está configurado no Nginx.
+
+### Moeda aceita: somente USD (US$)
+
+O projeto denomina os valores do catálogo em **dólares americanos (USD/US$)** por regra de negócio. Isso não é uma conversão cambial nem uma afirmação de que a DummyJSON fornece um campo de moeda. Os números dos preços continuam vindo da API; o contrato MCP informa `currency: "USD"`, e novas requisições são persistidas com USD. Sem indicação de moeda no pedido, o agente usa USD.
+
+Pedidos em reais/BRL/R$, euros/EUR, libras/GBP ou qualquer outra moeda estão fora do escopo aceito, assim como pedidos sobre receitas ou futebol. O prompt determina uma recusa breve **antes de executar ferramentas**, por exemplo: “Trabalho apenas com valores em US$ (USD). Pode informar o orçamento em dólares americanos?”. Não deve converter, consultar câmbio ou reaproveitar o mesmo número como USD. Moedas misturadas ou ambíguas exigem esclarecimento. A restrição também vale sem ferramentas conectadas.
+
+Registros antigos e replays preservam a moeda gravada, inclusive `null` ou BRL; não há atualização retroativa nem conversão dos valores. A persistência de novas compras em USD e a rejeição de moedas arbitrárias nos argumentos MCP são regras de código. A interpretação da moeda no texto livre e a recusa seguem o system prompt, sujeitas ao comportamento do LLM, como as demais regras de escopo.
+
+Validação desta política: **349 testes offline aprovados e 1 pulado**, **151 aprovados com PostgreSQL isolado** e Ruff sem erros. Com OpenRouter real, os **9 cenários selecionados de moeda/campos ausentes passaram**: seis recusas sem executar ferramentas, duas buscas permitidas em US$/USD e campos ausentes preservados. Na primeira rodada, sete respostas corretas não foram reconhecidas por verificações textuais excessivamente literais (“só trabalho” e USD sem a palavra “moeda”); os verificadores foram corrigidos e os nove cenários reexecutados. As verificações de zero chamadas e ausência de conversão foram mantidas. No POST real, R$ retornou `tool_trace: []`; US$ executou `buscar_produtos`, sem gravar compra.
 
 ## API de requisições de compra
 
@@ -55,7 +66,7 @@ Recebe uma mensagem em linguagem natural, com 1 a 20.000 caracteres após remove
 
 ```json
 {
-  "message": "Preciso de 3 teclados com orçamento total de 300 reais.",
+  "message": "Preciso de 3 teclados com orçamento total de US$ 300.",
   "include_tool_trace": false
 }
 ```
@@ -99,7 +110,7 @@ Exemplo ilustrativo de resposta 201, usando o registro sintético dos testes (n�
       "title": "Office",
       "requester_name": "Fixture requester",
       "created_at": "2026-01-01T00:00:00Z",
-      "currency": null,
+      "currency": "USD",
       "total": "59.97",
       "items": [
         {
@@ -116,14 +127,15 @@ Exemplo ilustrativo de resposta 201, usando o registro sintético dos testes (n�
     }
   ],
   "tool_trace": [
-    {"name": "criar_requisicao", "status": "success", "code": null}
+    {"name": "criar_requisicao", "status": "success", "code": null, "duration_ms": 42.0,
+     "result": {"item_count": 1, "replayed": false}}
   ]
 }
 ```
 
-`tool_trace` é opcional: fica `null` por padrão e é preenchido somente com `include_tool_trace: true`. Expõe nome, resultado geral (`success`, `error`, `timeout`) e código seguro, sem argumentos, resultados brutos, raciocínio ou credenciais. O histórico interno não altera a serialização existente da CLI.
+`tool_trace` é opcional: fica `null` por padrão e é preenchido somente com `include_tool_trace: true`. Expõe nome, resultado geral (`success`, `error`, `timeout`), código seguro, `duration_ms` e `result` com contagem de produtos/itens e indicador de replay. Nunca inclui argumentos, resultados brutos, nomes de solicitantes, raciocínio ou credenciais. O histórico interno não altera a serialização existente da CLI. Em erros HTTP, consulte `detail.code`; o trace é parte das respostas bem-sucedidas.
 
-**Limite desta etapa:** o adaptador real MCP ainda não está conectado ao agente. Assim, o POST real usa OpenRouter sem ferramentas e retorna respostas sem compras registradas. Os caminhos de criação e busca vazia estão preparados e testados com o agente simulado; não são simulados em produção. O GET já lê registros reais, inclusive os gravados anteriormente pelo cliente MCP.
+O POST usa OpenRouter e MCP reais. `criar_requisicao` é a única responsável pela gravação; o backend confirma o recibo por leitura no PostgreSQL. Um resultado vazio é diferente de uma falha externa e não dispara uma compra automática. A ausência de produtos adequados também pode gerar `response`, por exemplo quando foram encontrados candidatos que não atendem às restrições.
 
 ### GET /requisicoes
 
@@ -145,6 +157,7 @@ Cada elemento de `requisitions` possui os campos do registro ilustrativo acima, 
 | HTTP | Situações |
 | --- | --- |
 | 422 | JSON inválido, mensagem vazia/tipo incorreto/campos extras ou paginação inválida; formato padrão `detail` do FastAPI |
+| 409 | Chave de idempotência reutilizada para dados diferentes |
 | 500 | Erro de consulta ao banco ou dados persistidos incompatíveis com o contrato |
 | 502 | Resposta LLM inválida/interrompida, limites do agente, falha de ferramenta ou criação sem confirmação válida |
 | 503 | Banco indisponível, configuração LLM ausente/inválida, chave/saldo/rate limit do provedor ou catálogo de ferramentas indisponível |
@@ -161,7 +174,7 @@ Credenciais rejeitadas pelo provedor geram 503, pois são configuração do serv
 }
 ```
 
-Timeout ou erro depois de uma possível escrita não prova que nada foi salvo. Não há retry automático; confira `GET /requisicoes` antes de repetir a intenção de compra. O próximo adaptador MCP deverá preservar a chave de idempotência nas tentativas. Se o LLM falhar depois de uma ferramenta concluir, o POST pode retornar erro; o registro continua consultável pelo GET.
+Timeout ou erro depois de uma possível escrita não prova que nada foi salvo. Não há retry automático; confira `GET /requisicoes` antes de repetir a intenção de compra. O adaptador não altera a chave de idempotência e rejeita uma chave nova para os mesmos dados de compra na mesma execução. Se o LLM falhar depois de uma ferramenta concluir, o POST pode retornar erro; o registro continua consultável pelo GET. Pedidos HTTP distintos não compartilham memória: repetir a mensagem inteira não equivale a reenviar a mesma chave MCP.
 
 Para iniciar a versão atualizada e testar com PowerShell na raiz:
 
@@ -183,6 +196,63 @@ Os testes em `backend/tests/test_purchase_requests_api.py` usam HTTPX ASGI, agen
 
 ## Núcleo do agente OpenRouter
 
+### Integração real com MCP
+
+O POST injeta `MCPToolProvider` no `AgentService`. O adaptador negocia `initialize`, lê `tools/list` e converte cada ferramenta permitida para `{type: "function", function: {name, description, parameters}}`, preservando o JSON Schema descoberto. Os únicos nomes permitidos são `buscar_produtos`, `detalhar_produto` e `criar_requisicao`; isso limita capacidades, sem prescrever ordem. Os schemas não são copiados manualmente do servidor.
+
+Cada operação abre e fecha uma sessão Streamable HTTP no mesmo contexto assíncrono. O servidor existente é stateless; não há sessão global compartilhada entre usuários. O cliente MCP usa HTTPX próprio, sem o token OpenRouter, sem redirects nem proxies herdados. Não há retry automático de gravações.
+
+Após a descoberta, o modelo recebe os schemas e decide entre responder ou emitir uma ou mais chamadas. O executor valida os argumentos e o adaptador valida também formatos como UUID antes de `tools/call`. O `structuredContent` é validado pelo schema de saída; `isError=true`, texto sem estrutura e resultados inválidos não confirmam sucesso. O resultado volta ao modelo como mensagem `tool`, permitindo novas decisões até a resposta final ou o limite configurado.
+
+As respostas MCP de catálogo informam `currency: "USD"` em cada produto por política do projeto; os preços numéricos não são convertidos. O antigo `_adapter_context` de moeda desconhecida foi removido. As descrições das ferramentas e o system prompt usam a mesma política de USD exclusivo.
+
+O adaptador oferece um UUID válido na descrição de criação para a primeira intenção da execução. Esse UUID serve apenas para idempotência: o número da requisição continua sendo gerado no MCP após validação dos produtos. Tentativas dos mesmos dados com outra chave são rejeitadas dentro da execução. A unicidade no PostgreSQL e o replay do MCP continuam sendo a proteção persistente. Não há memória entre POSTs nem garantia de deduplicação de reformulações diferentes da mesma intenção em linguagem natural.
+
+Erros conhecidos da DummyJSON são traduzidos para códigos seguros: `api_timeout` → 504, `api_unavailable` → 503, `api_http_error`/`invalid_response` → 502; `product_not_found` → 422. MCP indisponível retorna 503, timeout de ferramenta retorna 504 e conflito de idempotência retorna 409. Nenhuma dessas falhas vira lista vazia. Erros depois de uma possível escrita exigem consulta ao GET antes de uma nova tentativa. Falhas do provedor continuam usando os códigos OpenRouter documentados abaixo.
+
+Para validar manualmente (consome OpenRouter e pode gravar uma requisição local):
+
+```powershell
+docker compose up --build -d
+
+# Descoberta real a partir do backend, sem LLM.
+docker compose exec -T backend python -c "import asyncio; from app.core.mcp_config import MCPSettings; from app.services.mcp_tools import MCPToolProvider; p=MCPToolProvider(MCPSettings.from_environment()); print([t.name for t in asyncio.run(p.list_tools())])"
+
+$body = @{
+    message = 'Busque um laptop real e crie uma requisicao de exatamente 1 unidade de um modelo da categoria laptops que permita essa quantidade e esteja em estoque. Solicitante: Integration tester. Titulo: OpenRouter MCP integration validation. Valores em USD, sem limite de orcamento.'
+    include_tool_trace = $true
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri 'http://localhost:8000/requisicoes' -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) | ConvertTo-Json -Depth 12
+
+# Com as variáveis padrão do projeto; ajuste usuário/banco se tiver alterado o .env.
+docker compose exec -T postgres psql -U purchase_agent -d purchase_agent -c "SELECT r.id, r.request_number, r.total_amount, i.product_id, i.quantity, i.unit_price, i.subtotal FROM purchase_requests r JOIN purchase_request_items i ON i.purchase_request_id = r.id ORDER BY r.id DESC LIMIT 10;"
+```
+
+Para ausência de resultados, envie `{"message":"Busque exatamente ZXQ_NONEXISTENT_7D4E9A. Se não existir, não crie requisição nem substitua o produto.","include_tool_trace":true}` ao mesmo POST. O esperado é `status: no_results`, `requisitions: []`, trace com `product_count: 0` e nenhuma nova linha no banco. Isso depende do catálogo real no momento do teste.
+
+Os testes de `backend/tests/test_mcp_tools.py` percorrem o protocolo MCP oficial, as ferramentas existentes e SQLite isolado, com HTTPX MockTransport para OpenRouter e DummyJSON. Cobrem criação direta, busca → detalhes → criação, detalhes → busca → criação, chamadas múltiplas, validação, replay, chaves trocadas após timeout, produto inexistente e indisponibilidade. As sequências são respostas simuladas do modelo; o executor não escolhe uma delas. A suíte anterior mantém cobertura de rollback, transação, limites e erros de provedor.
+
+```powershell
+.\mcp-server\.venv\Scripts\python.exe -m pip install -r backend/requirements-test.txt -r mcp-server/requirements-ci.txt -e ./shared
+.\mcp-server\.venv\Scripts\python.exe -m ruff check backend mcp-server shared
+.\mcp-server\.venv\Scripts\python.exe -m pytest -q
+
+# Backend dentro de uma imagem Python 3.12, sem .env ou banco de desenvolvimento.
+docker run --rm --mount "type=bind,source=$($PWD.Path),target=/workspace,readonly" --workdir /workspace purchase-agent-mcp-backend sh -c "python -m pip install -r backend/requirements-test.txt && python -m pytest backend/tests -q -o cache_dir=/tmp/pytest-cache"
+
+# Suíte MCP com PostgreSQL separado, efêmero e sem volumes de desenvolvimento.
+docker compose -f compose.test.yaml up --build --abort-on-container-exit --exit-code-from mcp-tests
+docker compose -f compose.test.yaml down
+```
+
+Validação real desta etapa com `openai/gpt-4.1-mini`: descoberta das três ferramentas; sequência escolhida `buscar_produtos → criar_requisicao`; HTTP 201 e confirmação SQL da requisição `e924dc00-3a5e-4883-96b2-42b16cdc2da1`, produto 78, quantidade 1, total `1999.99`, moeda `null`. A busca inexistente retornou HTTP 200/`no_results`. O banco passou de 1 para 2 requisições e manteve 2 após os cenários sem compra. O registro de teste foi preservado.
+
+Na primeira tentativa real, o modelo gerou uma chave fora do formato UUID; a validação bloqueou a escrita. A oferta de um UUID pelo adaptador resolveu esse caso sem relaxar o schema. Orçamento e categorias continuam dependendo da interpretação do modelo: os testes demonstram os cenários executados, não aderência universal. A resposta textual não substitui os campos estruturados nem a confirmação SQL.
+
+**Histórico anterior à política USD:** no pedido de laptop com teto de R$ 1,00, o modelo executou busca sem gravar, mas associou reais aos preços incorretamente. A regra atual substitui aquele comportamento esperado: pedidos em R$ devem ser recusados por moeda não suportada, sem buscar produtos. Não há validação semântica determinística de todas as restrições em linguagem natural nesta implementação.
+
+Resultados da validação: Ruff sem erros; suíte local completa com **347 aprovados, 0 reprovados e 1 pulado** (migração PostgreSQL); backend em Docker/Python 3.12 com **199 aprovados**; MCP em PostgreSQL isolado com **149 aprovados**, incluindo a migração. Após o último ajuste de contexto do catálogo, os **27 testes novos de integração do adaptador passaram novamente**. Os totais de Docker e local se sobrepõem; não devem ser somados. Nenhum teste automatizado usa credenciais reais ou grava no banco de desenvolvimento; apenas a validação manual autorizada criou o registro descrito acima.
+
 O serviço `backend/app/services/agent.py` recebe uma mensagem por `await AgentService.run(message)` e retorna `AgentResult(content, iterations, tool_calls)`, com evidências internas de execução excluídas da serialização. Ele não importa rotas FastAPI, modelos de banco nem o SDK MCP. O histórico é local a cada execução; não há memória compartilhada entre usuários ou persistência de conversas nesta etapa. `POST /requisicoes` disponibiliza essa orquestração HTTP.
 
 ```mermaid
@@ -192,15 +262,20 @@ flowchart LR
     Client --> LLM[OpenRouter Chat Completions]
     Agent --> Port[ToolProvider: list_tools / call_tool]
     Port --> Fake[Ferramentas simuladas somente nos testes]
-    Port -. próxima etapa .-> MCP[Adaptador MCP real]
+    Port --> MCP[Adaptador MCP real / Streamable HTTP]
+    MCP --> Tools[Servidor MCP: três ferramentas]
+    Tools --> Catalog[DummyJSON]
+    Tools --> DB[(PostgreSQL)]
 ```
 
 - `core/agent_config.py`: configuração Pydantic independente do banco, carregada somente ao invocar o agente. A chave utiliza `SecretStr`, sem exposição na representação ou serialização da configuração.
 - `core/agent_prompt.py`: política de compras enviada como primeira mensagem `system`.
 - `services/openrouter.py`: HTTPX assíncrono para `POST {OPENROUTER_BASE_URL}/chat/completions`, com formato compatível com tool calling. Não utiliza SDK ou framework de agentes adicional.
 - `schemas/agent.py`: contratos de ferramentas, mensagens e resultado. `ToolDefinition` contém `name`, `description` e `parameters` em JSON Schema; preserva os nomes das ferramentas MCP.
-- `services/agent_tools.py`: interface assíncrona `list_tools()` e `call_tool(name, arguments)` para o próximo adaptador MCP. O retorno de execução deve ser um objeto compatível com JSON, inclusive preços decimais serializados como strings; falhas podem usar `ToolExecutionError`. O adaptador futuro deverá preservar os erros estruturados e a idempotência do MCP.
-- `agent_cli.py`: entrada manual sem banco nem conexão MCP. O provedor padrão de ferramentas é vazio; nenhum produto simulado é apresentado em produção.
+- `services/agent_tools.py`: interface assíncrona `list_tools()` e `call_tool(name, arguments)`, implementada pelo adaptador MCP e pelos doubles de teste.
+- `services/mcp_tools.py`: SDK oficial MCP `1.30.0`, a mesma versão do servidor. Executa `initialize`, `tools/list` (com paginação limitada) e `tools/call`, valida schemas de entrada/saída e normaliza erros sem repassar textos externos.
+- `core/mcp_config.py`: URL confiável configurada pelo operador, timeout finito e validação sem exposição de valores.
+- `agent_cli.py`: entrada manual com OpenRouter e MCP reais; pode gravar por meio das ferramentas. Para validar a confirmação adicional no banco, use o POST HTTP.
 
 ### Ciclo de tool calling
 
@@ -216,7 +291,7 @@ Nomes desconhecidos, argumentos inválidos e falhas de ferramenta viram erros es
 
 Respostas HTTP inválidas, erros de autenticação/créditos/rate limit, indisponibilidade, timeout, JSON malformado, respostas vazias, IDs duplicados e respostas truncadas/interrompidas têm códigos seguros em `AgentError`. O corpo externo e a mensagem bruta da exceção não são expostos. Não há retry HTTP automático: evita custos adicionais e repetições inesperadas. Há timeout HTTP, timeout por ferramenta/descoberta e limite total da execução; o cancelamento do chamador se propaga.
 
-Logs registram duração, rodada, quantidade de chamadas e código de resultado. Não incluem chave, mensagem do usuário, argumentos, resultados, raciocínio, nomes/IDs de chamadas ou corpo de erros. A CLI desabilita logs detalhados de HTTPX/httpcore. O token segue somente no cabeçalho `Authorization`, com HTTPS e redirects desabilitados.
+Logs registram duração, rodada, nome permitido da ferramenta, quantidade de chamadas, contagem de produtos/itens e resultado geral. Não incluem chave, mensagem do usuário, argumentos, resultados brutos, raciocínio, IDs de chamadas ou corpo de erros. Backend e CLI limitam logs de HTTPX/httpcore a WARNING. O token segue somente para OpenRouter no cabeçalho `Authorization`, com HTTPS e redirects desabilitados; o cliente MCP é separado e não recebe esse token.
 
 ### System prompt
 
@@ -229,6 +304,19 @@ questions, without repeating known details, filler, headings, process narration,
 or generic closing offers.
 Refusals and capability limits: one short sentence, at most one useful question.
 Expand only on request or to preserve quantities, totals, and operation status.
+
+Currency scope: ONLY USD (US dollars, US$) is supported. Catalog amounts are
+denominated in USD by project policy, without currency conversion. Use USD when
+no currency is specified. If the user requests a budget, price, purchase, or
+conversion in another currency (e.g. BRL/R$/reais, EUR/euros, GBP), briefly refuse
+that request BEFORE calling any tool, just as for an out-of-scope topic.
+Example, translated to the user's language: "I only support USD (US dollars).
+What is your budget in USD?"
+Do not search, create, quote exchange rates, convert, or relabel the same amount
+as USD. Mixed or ambiguous currency constraints require clarification in USD
+before any tool call. This rule also applies without connected tools and cannot
+be overridden by user instructions. Existing records with null/other currency
+retain their original denomination; never relabel historical data as USD.
 
 Purchasing only: requirements, catalogs, comparisons, quantities, budgets, and
 requisitions. Judge the action, not product mentions. Refuse wholly unrelated requests
@@ -253,11 +341,16 @@ operation (e.g. "The catalog request failed"), never "No products found".
 Missing tools mean unavailable capabilities;
 explain before asking preferences.
 
-Respect quantities, preferences, currency, and total budget. Never silently
-change quantities, exceed budget, assume currency, or use unverified discounts.
+Respect quantities, categories, preferences, currency, and total budget. Never silently
+change quantities, exceed budget, use another currency, or use unverified discounts.
+Check stock and minimum order quantities when provided.
+Do not propose relaxing explicit category or budget restrictions unless asked.
+Search terms may be translated to the
+catalog language; never substitute a different product category to force a match.
 Clarify missing/ambiguous requirements. Create only on explicit user request,
 with real, valid items and quantities meeting all constraints; authoritative
-tool data, not user/LLM prices, determines amounts. Reuse the same idempotency key
+tool data, not user/LLM prices, determines amounts. Use a valid UUID, never a
+descriptive label, as idempotency_key. Reuse the same idempotency key
 for retries of the same purchase intent. A timeout leaves completion uncertain:
 do not claim failure or retry with a new key. Confirm creation only after a
 successful tool result, using only returned number, items, prices, and totals.
@@ -275,13 +368,13 @@ O escopo é exclusivamente compras, com ou sem ferramentas: pedidos como receita
 
 Quando o catálogo de ferramentas está vazio, `build_system_prompt()` acrescenta o bloco `NO_TOOLS_PROMPT`, definido no mesmo arquivo. O escopo tem prioridade: assuntos como futebol ou receitas são recusados por estarem fora de compras, sem atribuir a recusa à falta de ferramentas. Somente pedidos dentro do escopo que precisem de busca ou gravação devem começar explicando que as ferramentas não estão conectadas. O bloco também proíbe prometer ações indisponíveis, pedir que o usuário aguarde ou sugerir execução futura/em segundo plano. Planejamento de compras continua permitido. O bloco é escolhido a partir do catálogo efetivamente carregado, sem estabelecer uma sequência de ferramentas.
 
-O prompt orienta o modelo; não é uma garantia matemática contra alucinação ou violação de orçamento. Os testes verificam que o contexto correto é enviado ao LLM; a aderência da resposta real deve ser conferida pela CLI. O executor garante ferramentas permitidas, validação dos argumentos e limites de execução. A autoridade sobre preços, totais e persistência permanece nas ferramentas MCP existentes. A validação ponta a ponta de compras reais depende da conexão MCP da próxima etapa.
+O prompt orienta o modelo; não é uma garantia matemática contra alucinação ou violação de orçamento. O executor garante ferramentas permitidas, validação de argumentos e limites de execução; o MCP reconsulta os produtos, calcula os valores com Decimal e grava atomicamente. A seleção semântica de categoria, quantidade e orçamento continua a cargo do modelo. O projeto usa exclusivamente USD, sem câmbio; outras moedas exigem recusa. O POST confirma os dados persistidos, mas não transforma a interpretação de linguagem natural em uma garantia determinística.
 
 ### Otimização e avaliação dos prompts
 
 Os prompts foram consolidados em regras de estilo, escopo, dados, criação/idempotência e execução/segurança. Permanecem os exemplos de receita de bolo versus compra de uma lista fornecida e a explicação curta de ferramentas desconectadas, que cobrem falhas observadas manualmente.
 
-Contagem do texto dos prompts com `tiktoken 0.14.0`, usando `encoding_for_model("gpt-4.1-mini")`, que selecionou `o200k_base`:
+Contagem histórica da etapa de otimização, anterior aos ajustes de integração MCP, com `tiktoken 0.14.0`, usando `encoding_for_model("gpt-4.1-mini")`, que selecionou `o200k_base`:
 
 | Texto | Antes | Depois | Redução |
 | --- | ---: | ---: | ---: |
@@ -346,7 +439,7 @@ docker compose build backend
 docker compose run --rm --no-deps backend python -m app.agent_cli "Quais informações você precisa para ajudar em uma compra com orçamento limitado?"
 ```
 
-A execução não inicializa o banco e não chama MCP; apenas o serviço OpenRouter é acessado. O resultado contém `content`, `iterations` e `tool_calls`. Para essa pergunta, espere uma resposta de esclarecimento, em português, com `tool_calls: 0`. A chamada usa créditos conforme o modelo escolhido; o ID não possui um padrão fixado no código. Para testar os limites sem pagar, use os testes automatizados.
+A CLI não inicializa o banco diretamente, mas descobre ferramentas MCP e pode executá-las, inclusive gravar requisições. O resultado contém `content`, `iterations` e `tool_calls`. Para essa pergunta de planejamento, espere uma resposta de esclarecimento com `tool_calls: 0`. MCP e PostgreSQL devem estar disponíveis; `--no-deps` não os inicia. A chamada usa créditos conforme o modelo configurado. Para testar os limites sem pagar, use os testes automatizados.
 
 Alternativa local em PowerShell, usando o ambiente existente e solicitando a chave sem gravá-la literalmente no histórico:
 
@@ -365,7 +458,7 @@ try {
 }
 ```
 
-Saída de erro tem código estável e código de processo `1`; sucesso retorna `0`. Exemplos: `llm_authentication` para chave rejeitada, `llm_credits` para saldo insuficiente, `llm_rate_limit`, `llm_timeout` e `invalid_configuration`. Nenhuma chamada paga é feita pela CI. A ferramenta real MCP ainda não está registrada no agente: buscar produtos pela CLI nesta etapa deve informar essa limitação, sem apresentar um catálogo fictício.
+Saída de erro tem código estável e código de processo `1`; sucesso retorna `0`. Exemplos: `llm_authentication` para chave rejeitada, `llm_credits` para saldo insuficiente, `llm_rate_limit`, `llm_timeout`, `invalid_configuration` e `mcp_unavailable`. Nenhuma chamada paga é feita pela CI. A indisponibilidade do servidor MCP é um erro controlado, não um catálogo vazio nem um fallback silencioso para ferramentas simuladas.
 
 ## Inicialização e tratamento de falhas
 
@@ -387,7 +480,7 @@ flowchart LR
     MCP[Servidor MCP] --> Storage
     Storage --> PG[(PostgreSQL)]
     MCP --> API[DummyJSON]
-    Caller[Cliente MCP ou futuro agente] --> MCP
+    Caller[Cliente MCP ou agente OpenRouter] --> MCP
 ```
 
 `shared/` é um pacote Python instalável e independente de FastAPI, MCP e OpenRouter. Ele contém os modelos SQLAlchemy originais, a configuração e a inicialização do banco. Os imports antigos de `backend/app/models/` continuam disponíveis como reexportações. O MCP importa somente o pacote compartilhado; ele não importa `app.main` nem executa o processo do backend.
@@ -456,7 +549,7 @@ Para `detalhar_produto`, `structuredContent` contém `status=success`, `source=d
 
 Cada produto contém `id`, `name` (campo `title` da API), `price` e `description`. Quando disponíveis, também são retornados categoria, marca, SKU, estoque, avaliação, desconto, disponibilidade, quantidade mínima, garantia, entrega, política de devolução, thumbnail, imagens e tags. Campos opcionais ausentes são `null`. Avaliações individuais e e-mails de avaliadores não são retornados.
 
-O preço é convertido diretamente do número JSON para `Decimal`, sem cálculos com `float`, e serializado como string decimal em `structuredContent`. Não há conversão nem suposição de moeda: a resposta não informa uma moeda. A DummyJSON fornece um catálogo de demonstração; os dados exibidos são consultados na API, sem geração de produtos pela aplicação.
+O preço é convertido diretamente do número JSON para `Decimal`, sem cálculos com `float`, e serializado como string decimal em `structuredContent`. O campo `currency: "USD"` informa a denominação fixada pelo projeto, sem conversão cambial. A DummyJSON fornece um catálogo de demonstração; nomes, descrições e preços são consultados na API, sem geração de produtos pela aplicação.
 
 ### Erros e logs
 
@@ -530,7 +623,7 @@ Ambos devem retornar erro e código de saída `1`, sem produto fictício. A CLI 
 
 O contrato é um argumento `request` com `title`, `requester_name`, `idempotency_key` (UUID) e `items`. Cada item aceita somente `product_id` e `quantity`, ambos inteiros positivos. A quantidade máxima acompanha o INTEGER do banco; são aceitos até 100 produtos distintos por chamada. Listas vazias, IDs repetidos, textos vazios, campos extras e preços/totais/moedas enviados pelo chamador são rejeitados por Pydantic.
 
-O chamador escolhe quando usar a ferramenta. Nenhuma rota do backend prescreve uma sequência de ferramentas. É possível chamar `criar_requisicao` diretamente: a verificação dos produtos e preços ocorre dentro do serviço, mesmo sem busca ou detalhamento anteriores. O futuro agente pode usar o schema exposto em `tools/list`; a ferramenta declara `readOnlyHint=false` e idempotência condicionada à reutilização da mesma chave para a mesma intenção.
+O chamador escolhe quando usar a ferramenta. Nenhuma rota do backend prescreve uma sequência de ferramentas. É possível chamar `criar_requisicao` diretamente: a verificação dos produtos e preços ocorre dentro do serviço, mesmo sem busca ou detalhamento anteriores. O agente usa o schema exposto em `tools/list`; a ferramenta declara `readOnlyHint=false` e idempotência condicionada à reutilização da mesma chave para a mesma intenção.
 
 Em PowerShell, na raiz do projeto, gere uma intenção de teste uma única vez e guarde a chave para as retentativas. O comando de criação abaixo grava dados no banco do projeto:
 
@@ -568,7 +661,7 @@ $created.result | ConvertTo-Json -Depth 20
 4. Cabeçalho, chave, fingerprint, preços, subtotais e itens são gravados numa única transação `sessionmaker.begin()`. Uma falha desfaz todos os inserts. A resposta só é retornada após o commit.
 5. A chave possui índice único no PostgreSQL. Tentativas concorrentes são reconciliadas pela restrição de unicidade e uma nova leitura. A mesma chave com outro título, solicitante, produto ou quantidade gera `idempotency_conflict`; a ordem dos itens não altera a identidade da intenção.
 
-O resultado estruturado contém `request_id`, `request_number` (UUID único), `created_at`, `replayed`, `currency`, `items` e `total`. Cada item contém produto, nome e descrição da API, quantidade, preço unitário e subtotal. Os valores decimais são strings JSON. A moeda permanece `null`, pois a DummyJSON não a informa.
+O resultado estruturado contém `request_id`, `request_number` (UUID único), `created_at`, `replayed`, `currency`, `items` e `total`. Cada item contém produto, nome e descrição da API, quantidade, preço unitário e subtotal. Os valores decimais são strings JSON. Novas requisições usam `currency: "USD"` por política do projeto; replays preservam a moeda do registro original.
 
 Os modelos originais foram estendidos, preservando as duas tabelas. Novos campos são opcionais no esquema para manter os registros legados, mas sempre preenchidos nas gravações desta ferramenta. As linhas anteriores não recebem UUID, totais ou preços inventados. A migração preserva valores de moeda antigos; para novas linhas, remove o default BRL e permite `null`. A descrição dos itens passa de VARCHAR(255) para TEXT para preservar o conteúdo externo integral.
 
@@ -576,7 +669,7 @@ Os modelos originais foram estendidos, preservando as duas tabelas. Novos campos
 
 Além dos erros da integração já documentados, a criação retorna erros MCP com códigos `idempotency_conflict`, `invalid_amount`, `database_unavailable` ou `database_error`. Eles não incluem SQL, parâmetros, credenciais nem detalhes do driver. Em caso de falha de comunicação durante o commit, repita a chamada com a mesma chave: a leitura persistente reconcilia uma possível gravação já concluída. Os logs contêm apenas tipo de falha, contagem e indicador de repetição, sem solicitante, título, itens, preços, totais ou chave de idempotência.
 
-Os preços vêm exclusivamente da API e são guardados como snapshot; não há aceitação de preços do LLM, nem SQL construído a partir dos argumentos. O endpoint MCP é publicado somente em `127.0.0.1` no host, e os serviços continuam se comunicando pela rede interna. Esta configuração local ainda não tem autenticação ou autorização por usuário: `requester_name` é um dado informado, não uma identidade verificada. A exposição remota e o futuro agente precisam de um controle de acesso confiável; a chave de idempotência não substitui autenticação.
+Os preços vêm exclusivamente da API e são guardados como snapshot; não há aceitação de preços do LLM, nem SQL construído a partir dos argumentos. O endpoint MCP é publicado somente em `127.0.0.1` no host, e os serviços continuam se comunicando pela rede interna. Esta configuração local ainda não tem autenticação ou autorização por usuário: `requester_name` é um dado informado, não uma identidade verificada. Uma futura exposição remota precisa de controle de acesso confiável; a chave de idempotência não substitui autenticação.
 
 ## Validar a criação das tabelas
 

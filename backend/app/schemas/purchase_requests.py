@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 
 class PurchaseMessageInput(BaseModel):
     model_config = ConfigDict(extra="forbid", json_schema_extra={"examples": [{
-        "message": "Preciso de 3 teclados com orçamento total de 300 reais.",
+        "message": "Preciso de 3 teclados com orçamento total de US$ 300.",
         "include_tool_trace": False,
     }]})
 
@@ -52,6 +52,10 @@ class ToolTraceEntry(BaseModel):
     name: str
     status: Literal["success", "error", "timeout"]
     code: str | None = None
+    duration_ms: float = Field(default=0, ge=0)
+    result: dict[str, int | bool] | None = Field(
+        default=None, description="Safe counts and replay flag; no raw tool payload or personal data.",
+    )
 
 
 class PurchaseMessageResponse(BaseModel):
@@ -81,3 +85,7 @@ class APIErrorDetail(BaseModel):
 
 class APIErrorResponse(BaseModel):
     detail: APIErrorDetail
+
+
+class InputValidationErrorResponse(BaseModel):
+    detail: list[dict]

@@ -234,13 +234,16 @@ async def test_failed_creation_does_not_claim_absence_or_success(api_client, api
 async def test_tool_api_error_is_not_an_empty_search(api_client, api_context):
     set_events(api_context, ToolExecutionEvent(name="buscar_produtos", outcome="ok", result={"error": {"code": "api_unavailable"}}))
     response = await api_client.post("/requisicoes", json={"message": "Busque"})
-    assert response.status_code == 502
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "api_unavailable"
 
 
 async def test_trace_is_opt_in_and_never_contains_arguments_or_results(api_client, api_context):
     set_events(api_context, ToolExecutionEvent(name="buscar_produtos", outcome="ok", result={"private": "private-sensitive-data"}))
     response = await api_client.post("/requisicoes", json={"message": "Busque", "include_tool_trace": True})
-    assert response.json()["tool_trace"] == [{"name": "buscar_produtos", "status": "success", "code": None}]
+    assert response.json()["tool_trace"] == [{
+        "name": "buscar_produtos", "status": "success", "code": None, "duration_ms": 0.0, "result": None,
+    }]
     assert "private-sensitive-data" not in response.text
     assert "arguments" not in response.text
 
@@ -352,7 +355,11 @@ async def test_executor_receipt_reaches_endpoint_without_llm_text_parsing(
         response = await api_client.post("/requisicoes", json={"message": "Crie uma requisição", "include_tool_trace": True})
     assert response.status_code == 201
     assert response.json()["requisitions"][0]["total"] == "59.97"
-    assert response.json()["tool_trace"] == [{"name": "criar_requisicao", "status": "success", "code": None}]
+    trace = response.json()["tool_trace"]
+    assert len(trace) == 1 and trace[0]["duration_ms"] >= 0
+    assert {key: value for key, value in trace[0].items() if key != "duration_ms"} == {
+        "name": "criar_requisicao", "status": "success", "code": None, "result": None,
+    }
     assert harness.tools.calls == [("criar_requisicao", {"request": {"items": [{"product_id": 1, "quantity": 3}]}})]
 
 

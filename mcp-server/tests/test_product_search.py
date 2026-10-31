@@ -28,7 +28,7 @@ async def test_found_products_match_only_the_api_response(product_client, catalo
         assert product.brand == original.get("brand")
     assert result.products[1].stock is None
     assert "reviews" not in result.products[0].model_dump()
-    assert "currency" not in result.products[0].model_dump()
+    assert result.products[0].currency == "USD"
     assert "private@example.test" not in result.model_dump_json()
     assert "phone & charger" not in caplog.text
     assert "count=2" in caplog.text

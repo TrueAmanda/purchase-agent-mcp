@@ -14,7 +14,7 @@ def http_error(error: AgentError | PurchaseAPIError) -> HTTPException:
             status = 504
         elif error.code in {
             "invalid_configuration", "llm_authentication", "llm_credits", "llm_rate_limit",
-            "llm_unavailable", "tool_catalog_error",
+            "llm_unavailable", "tool_catalog_error", "invalid_mcp_configuration", "mcp_unavailable",
         }:
             status = 503
         elif error.code == "invalid_message":

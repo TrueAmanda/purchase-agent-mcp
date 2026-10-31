@@ -31,7 +31,7 @@ async def test_existing_product_matches_upstream_fields_and_types(product_client
         assert getattr(product, field) == product_payload[upstream]
     assert product.model_dump(mode="json")["price"] == "19.99"
     assert "reviews" not in product.model_dump()
-    assert "currency" not in product.model_dump()
+    assert product.currency == "USD"
     assert catalog.calls[0].url.path == "/products/1"
     assert dict(catalog.calls[0].url.params) == {}
 

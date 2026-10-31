@@ -1,4 +1,4 @@
-"""A future MCP adapter implements this interface; no MCP imports are needed."""
+"""Tool-provider boundary shared by the MCP adapter and offline test doubles."""
 
 from typing import Any, Protocol
 
@@ -14,7 +14,7 @@ class ToolProvider(Protocol):
 
 
 class EmptyToolProvider:
-    """Default until the real MCP adapter is connected in the next stage."""
+    """Explicit offline/no-tools provider; production entry points inject MCP."""
 
     async def list_tools(self) -> list[ToolDefinition]:
         return []

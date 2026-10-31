@@ -27,7 +27,7 @@ async def test_valid_request_persists_api_snapshot(purchase_service, request_pay
     assert isinstance(result.request_number, UUID)
     assert isinstance(result.created_at, datetime)
     assert result.replayed is False
-    assert result.currency is None
+    assert result.currency == "USD"
     assert result.total == Decimal("59.97") and isinstance(result.total, Decimal)
     assert len(result.items) == 1
     item = result.items[0]
@@ -42,7 +42,7 @@ async def test_valid_request_persists_api_snapshot(purchase_service, request_pay
         assert record.request_number == str(result.request_number)
         assert record.idempotency_key == request_payload["idempotency_key"]
         assert record.total_amount == result.total
-        assert record.currency is None
+        assert record.currency == "USD"
         assert len(record.items) == 1
         stored = record.items[0]
         assert stored.purchase_request_id == record.id
@@ -64,6 +64,20 @@ async def test_multiple_items_have_exact_decimal_totals_and_relationships(purcha
         items = session.scalars(select(PurchaseRequestItem)).all()
         assert {item.purchase_request_id for item in items} == {result.request_id}
         assert {item.product_id for item in items} == {"1", "2"}
+
+
+@pytest.mark.parametrize("legacy_currency", [None, "BRL"])
+async def test_replay_preserves_historical_currency(
+    purchase_service, request_payload, db_sessions, legacy_currency,
+):
+    request = PurchaseRequestInput.model_validate(request_payload)
+    created = await purchase_service.create(request)
+    with db_sessions.begin() as session:
+        session.get(PurchaseRequest, created.request_id).currency = legacy_currency
+    replay = await purchase_service.create(request)
+    assert replay.replayed is True
+    assert replay.currency == legacy_currency
+    assert replay.request_number == created.request_number and replay.total == created.total
 
 
 @pytest.mark.parametrize("items", [

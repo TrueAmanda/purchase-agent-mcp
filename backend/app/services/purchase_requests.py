@@ -19,6 +19,44 @@ from app.schemas.purchase_requests import (
 
 logger = logging.getLogger(__name__)
 
+TOOL_FAILURES = {
+    "api_timeout": (504, "DummyJSON timed out. Product validation could not be completed."),
+    "api_unavailable": (503, "DummyJSON is unavailable. Product validation could not be completed."),
+    "api_http_error": (502, "DummyJSON returned an HTTP error; this is not an empty catalog result."),
+    "invalid_response": (502, "DummyJSON returned invalid product data."),
+    "product_not_found": (422, "A requested product does not exist in DummyJSON."),
+    "database_unavailable": (503, "Purchase storage is unavailable; check saved requisitions before retrying."),
+    "database_error": (502, "Purchase registration is unconfirmed; check saved requisitions before retrying."),
+    "idempotency_conflict": (409, "The idempotency key was already used for different purchase data."),
+    "invalid_amount": (422, "The catalog amount exceeds supported storage precision."),
+    "mcp_unavailable": (503, "MCP communication failed. A write may have completed; check saved requisitions before retrying."),
+    "tool_timeout": (504, "A tool timed out. A write may have completed; check saved requisitions before retrying."),
+}
+
+
+def _error_code(event: ToolExecutionEvent) -> str:
+    if event.outcome != "ok":
+        return event.outcome
+    error = (event.result or {}).get("error")
+    code = error.get("code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) and code in TOOL_FAILURES else "tool_execution_failed"
+
+
+def _safe_summary(event: ToolExecutionEvent) -> dict | None:
+    if _event_failed(event):
+        return None
+    data = event.result or {}
+    if event.name == "buscar_produtos" and isinstance(data.get("products"), list):
+        return {"product_count": len(data["products"])}
+    if event.name == "detalhar_produto" and isinstance(data.get("product"), dict):
+        return {"product_count": 1}
+    if event.name == "criar_requisicao" and isinstance(data.get("items"), list):
+        summary = {"item_count": len(data["items"])}
+        if type(data.get("replayed")) is bool:
+            summary["replayed"] = data["replayed"]
+        return summary
+    return None
+
 
 class PurchaseAPIError(Exception):
     def __init__(self, code: str, message: str, status_code: int):
@@ -107,12 +145,11 @@ class PurchaseRequestService:
     def _trace(events: list[ToolExecutionEvent]) -> list[ToolTraceEntry]:
         return [ToolTraceEntry(
             name=event.name,
-            status="timeout" if event.outcome == "tool_timeout" else (
+            status="timeout" if _error_code(event) in {"tool_timeout", "api_timeout"} else (
                 "success" if not _event_failed(event) else "error"
             ),
-            code=None if not _event_failed(event) else (
-                event.outcome if event.outcome != "ok" else "tool_execution_failed"
-            ),
+            code=None if not _event_failed(event) else _error_code(event),
+            duration_ms=event.duration_ms, result=_safe_summary(event),
         ) for event in events]
 
     @staticmethod
@@ -144,6 +181,11 @@ class PurchaseRequestService:
                 tool_trace=self._trace(events) if include_trace else None,
             ), 200 if all(purchase.replayed for purchase in purchases) else 201
         if failed_events:
+            for event in failed_events:
+                code = _error_code(event)
+                if code in TOOL_FAILURES:
+                    status, message = TOOL_FAILURES[code]
+                    raise PurchaseAPIError(code, message, status)
             timed_out = any(event.outcome == "tool_timeout" for event in failed_events)
             raise PurchaseAPIError(
                 "tool_timeout" if timed_out else "tool_execution_failed",

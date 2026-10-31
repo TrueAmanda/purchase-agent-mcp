@@ -64,7 +64,7 @@ async def test_all_tools_over_tcp_validate_input_output_and_persist(
     assert outputs["detalhar_produto"]["product"]["name"] == catalog.products[1]["title"]
     created = outputs["criar_requisicao"]
     assert UUID(created["request_number"])
-    assert created["replayed"] is False and created["currency"] is None
+    assert created["replayed"] is False and created["currency"] == "USD"
     assert type(created["total"]) is str and Decimal(created["total"]) == Decimal("59.97")
     assert created["items"][0]["quantity"] == 3
     assert type(created["items"][0]["unit_price"]) is str

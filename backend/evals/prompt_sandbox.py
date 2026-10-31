@@ -18,10 +18,10 @@ class PromptSandbox:
         self.calls = []
         self.product = {
             "id": 1, "name": "Fixture keyboard", "description": "Synthetic evaluation product.",
-            "price": "100.00", "currency": "BRL", "stock": 10,
+            "price": "100.00", "currency": "USD", "stock": 10,
         }
         if scenario == "missing":
-            self.product = {"id": 1, "name": "Fixture keyboard", "price": "100.00"}
+            self.product = {"id": 1, "name": "Fixture keyboard", "price": "100.00", "currency": "USD"}
         self.definitions = [
             ToolDefinition(name="buscar_produtos", description="Search the evaluation catalog by term.", parameters={
                 "type": "object", "properties": {"termo": {"type": "string", "minLength": 1}},
@@ -62,7 +62,7 @@ class PromptSandbox:
                 raise ToolExecutionError("Synthetic catalog outage.")
             products = [] if self.scenario == "empty" else [deepcopy(self.product)]
             if "farinha" in arguments["termo"].lower():
-                products = [{"id": 2, "name": "Fixture flour", "price": "10.00", "currency": "BRL"}]
+                products = [{"id": 2, "name": "Fixture flour", "price": "10.00", "currency": "USD"}]
             return {"status": "success" if products else "no_results", "products": products, "total": len(products)}
         if name == "detalhar_produto":
             if arguments["id"] != self.product["id"]:
@@ -82,7 +82,7 @@ class PromptSandbox:
                 "subtotal": str(Decimal("100.00") * item["quantity"]),
             } for item in data["items"]]
             return {
-                "request_number": self.request_number, "items": items, "currency": "BRL",
+                "request_number": self.request_number, "items": items, "currency": "USD",
                 "total": str(sum(Decimal(item["subtotal"]) for item in items)),
             }
         raise AssertionError("Unadvertised evaluation tool.")

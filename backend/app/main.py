@@ -1,6 +1,7 @@
 """FastAPI entry point."""
 
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI
 from sqlalchemy.orm import sessionmaker
@@ -13,6 +14,9 @@ from app.database import build_engine, initialize_database
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     settings = Settings.from_environment()
     engine = build_engine(settings)
     try:
