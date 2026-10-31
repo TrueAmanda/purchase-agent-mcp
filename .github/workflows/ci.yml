@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   python:
-    name: Python lint and MCP tests
+    name: Python lint and tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -37,13 +37,15 @@ jobs:
             mcp-server/requirements.txt
             mcp-server/requirements-test.txt
             mcp-server/requirements-ci.txt
+            backend/requirements.txt
+            backend/requirements-test.txt
             shared/pyproject.toml
 
       - name: Install CI dependencies
-        run: python -m pip install -r mcp-server/requirements-ci.txt -e ./shared
+        run: python -m pip install -r mcp-server/requirements-ci.txt -r backend/requirements-test.txt -e ./shared
 
       - name: Lint Python
         run: python -m ruff check backend mcp-server shared
 
-      - name: Run all MCP tests without external services
-        run: python -m pytest mcp-server -q
+      - name: Run backend and MCP tests without external services
+        run: python -m pytest -q
