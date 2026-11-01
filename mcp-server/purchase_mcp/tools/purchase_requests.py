@@ -18,6 +18,8 @@ def register_purchase_tools(server: FastMCP) -> None:
         """Persist a purchase request when creation is intended. Reuse the same idempotency_key on retries.
 
         Supply product IDs and quantities, never prices. Product prices are verified with DummyJSON.
+        Supply the user's constraints: max_total for the entire request, max_unit_price for each unit.
+        Category, quantities, stock, minimum orders and budgets are checked before any write.
         No prior search/detail tool call is required. This tool writes to PostgreSQL.
         """
         dependencies = ctx.request_context.lifespan_context

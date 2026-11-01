@@ -9,6 +9,7 @@ ERROR_CODES = frozenset({
     "database_unavailable", "database_error", "idempotency_conflict", "invalid_amount",
     "unknown_tool", "invalid_tool_arguments", "tool_timeout", "tool_cancelled",
     "tool_execution_failed", "mcp_unavailable", "invalid_tool_result",
+    "budget_exceeded", "purchase_constraints_violated", "purchase_constraints_unclear",
 })
 
 

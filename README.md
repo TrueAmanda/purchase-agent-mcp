@@ -142,9 +142,9 @@ No POST real “Consulte a categoria fragrances e mostre opções de perfumes co
 
 A busca da DummyJSON usa o texto enviado, sem tradução automática de português. O prompt orienta o agente a escolher palavras-chave concisas em inglês, por exemplo `máscara de cílios` → `mascara`, mantendo a resposta em português e a categoria solicitada. Um resultado vazio vale para aquela consulta; não comprova ausência da categoria no catálogo. O agente decide se outra palavra-chave é útil, sem uma sequência fixa no backend. Fotos solicitadas devem usar o endereço exato de `thumbnail`/`images` retornado pelas ferramentas, em Markdown.
 
-Busca textual não equivale a listar uma categoria: na consulta real, `/products/search?q=skin%20care` retornou zero, enquanto `/products/category/skin-care` retornou três produtos (sabonete para mãos, sabonete líquido corporal e loção). Agora `buscar_produtos(termo)` consulta primeiro `/products/search`; se vier vazio, lê `/products/category-list` e compara o termo com os slugs oficiais, ignorando maiúsculas, espaços, hífens e sublinhados. Havendo uma única correspondência, consulta `/products/category/{slug}` e valida que os produtos pertencem à categoria. São no máximo três consultas HTTP dentro da mesma chamada MCP, com os timeouts e erros existentes; não há novas tentativas automáticas nem nova ferramenta. Falha nessa consulta adicional retorna erro, não ausência de produtos. Não há tabela fixa de categorias/produtos nem fabricação de resultados. Referência: [busca e consulta por categoria da DummyJSON](https://dummyjson.com/docs/products).
+Busca textual não equivale a listar uma categoria: na consulta real, `/products/search?q=skin%20care` retornou zero, enquanto `/products/category/skin-care` retornou três produtos (sabonete para mãos, sabonete líquido corporal e loção). `buscar_produtos(termo)` consulta primeiro `/products/search`, depois lê `/products/category-list` mesmo se a busca textual encontrar produtos. Compara o termo com os slugs oficiais, ignorando maiúsculas, espaços, hífens e sublinhados. Havendo uma única correspondência, consulta `/products/category/{slug}?limit=0` e valida categoria e completude. São no máximo três consultas HTTP dentro da mesma chamada MCP, com os timeouts e erros existentes; não há novas tentativas automáticas nem nova ferramenta. Falha nessa consulta adicional retorna erro, não ausência de produtos. Não há tabela fixa de categorias/produtos nem fabricação de resultados. Referência: [busca e consulta por categoria da DummyJSON](https://dummyjson.com/docs/products).
 
-O contrato de entrada continua `buscar_produtos(termo)`. O resultado acrescenta `match_type: "text" | "category"` e `category: string | null`, preservando query, produtos, paginação e preços. `skin care` e `skin-care` podem resolver a categoria oficial `skin-care`; termos desconhecidos continuam sem resultados. Uma busca textual já preenchida não é substituída. Os produtos apresentados precisam corresponder à categoria e descrição retornadas: `skin`, por exemplo, também pode encontrar um utensílio de cozinha por correspondência parcial. O modelo decide quais termos e ferramentas usar; a resolução de categoria é somente uma regra de consulta à API, sem estabelecer busca/detalhamento/gravação no backend. A interface usa **Nenhum resultado nas buscas realizadas**, sem transformar uma busca vazia em ausência global.
+O contrato de entrada continua `buscar_produtos(termo)`. O resultado acrescenta `match_type: "text" | "category"` e `category: string | null`, preservando query, produtos, paginação e preços. `skin care` e `skin-care` podem resolver a categoria oficial `skin-care`; termos desconhecidos continuam sem resultados. Após a investigação da avaliação, uma correspondência exata com categoria oficial passa a substituir inclusive uma busca textual preenchida, pois ela pode representar só parte do catálogo ou acessórios. A categoria é consultada com `limit=0` e sua completude é validada. Os produtos apresentados precisam corresponder à categoria e descrição retornadas: `skin`, por exemplo, também pode encontrar um utensílio de cozinha por correspondência parcial. O modelo decide quais termos e ferramentas usar; a resolução de categoria não estabelece busca/detalhamento/gravação no backend. A interface usa **Nenhum resultado nas buscas realizadas**, sem transformar uma busca vazia em ausência global.
 
 Validação da consulta por categoria: **404 testes Python aprovados, 1 pulado**, **95 testes frontend aprovados**, Ruff e build local sem erros. Os novos testes incluem variantes de rótulo, categorias desconhecidas/vazias, falhas e timeouts das consultas adicionais, slugs inválidos, resposta com categoria incorreta e chamada pelo SDK MCP real, sem gravar compras. Em sete avaliações selecionadas com OpenRouter, **cinco passaram e duas falharam**: os dois cenários de cuidados com a pele passaram, inclusive iniciando pela consulta textual vazia; uma autorização condicional voltou a pedir confirmação e um erro sintético genérico de ferramenta foi descrito como busca vazia. Os verificadores não foram relaxados. Essas falhas demonstram a variabilidade semântica ainda existente; no POST real, o backend classifica erros pelos eventos do executor e retorna erros HTTP seguros, independentemente dessa narrativa. A resolução de categoria é validada no código e não depende de o LLM escolher repetir a consulta.
 
@@ -506,6 +506,10 @@ explain before asking preferences.
 Respect quantities, categories, preferences, currency, and total budget. Never silently
 change quantities, exceed budget, use another currency, or use unverified discounts.
 Check stock and minimum order quantities when provided.
+Keep TOTAL and per-unit budgets separate. Runtime purchase limits come from the
+user's text and are enforced in code; do not omit, increase or reinterpret them.
+If a selection is rejected, no purchase was saved: choose another eligible
+option or explain the constraint. Never change quantities to fit a budget.
 Do not propose relaxing explicit category or budget restrictions unless asked.
 Translate search terms to concise English catalog keywords, e.g. "máscara de
 cílios" -> "mascara". For a broad category request, use its English label or
@@ -515,6 +519,12 @@ are keyword matches. A text-only empty result does not exhaust a category: choos
 relevant keywords without asking permission for the same authorized research.
 Check returned categories/descriptions: substring matches may be unrelated.
 Never substitute another category to force a match.
+For an explicit official category, search its category label; this returns the
+complete category even when a text search would match only a few descriptions.
+Product names and model codes are search terms, not numeric product IDs.
+When a call is rejected for invalid arguments before execution, use its feedback
+to correct the arguments or choose an appropriate advertised tool. Do not treat
+that rejection as catalog unavailability or conclude that the product is absent.
 Clarify missing/ambiguous requirements. Create only on explicit user request.
 "If the conditions are met, create the requisition" is already authorization,
 not a request for another confirmation. Once the requested checks confirm all
@@ -559,6 +569,10 @@ O diferencial de avaliação do case está em [docs/agent-evaluation.md](docs/ag
 Execução real em 01/11/2026: **2/5 acertos (40%)**. Quantidade zero e orçamento impossível passaram. Laptops foram gravados acima do teto; smartphones não chegaram à criação; produto inexistente retornou erro de argumentos. O relatório registra as falhas reais, sem mudar o agente para obter aprovação. A requisição de teste criada foi preservada; detalhes e número estão no documento.
 
 Validação do avaliador: **37 testes offline aprovados; suíte completa com 477 aprovados e 1 pulado; Ruff aprovado**. Os testes normais não fazem as cinco chamadas pagas.
+
+A investigação e as correções posteriores estão em [docs/evaluation-fixes.md](docs/evaluation-fixes.md): limites totais/unitários derivados do usuário e impostos no MCP, comparação monetária com Decimal, consulta completa por categoria e recuperação de argumentos inválidos sem classificá-los como indisponibilidade externa. Os resultados originais acima permanecem como histórico, e o avaliador mantém os mesmos pedidos e critérios.
+
+**Resultado após as correções: 4/5 (80%).** Laptops e smartphones foram confirmados em SQL/GET dentro dos orçamentos, por US$ 2.199,98 e US$ 449,97. Quantidade zero e orçamento impossível não gravaram. Produto inexistente ainda falhou: argumentos inválidos retornaram 422, sem invocação MCP nem gravação; o modelo não corrigiu a chamada nessa rodada. Validação atual: **555 testes Python locais aprovados e 1 pulado; 556 aprovados no PostgreSQL isolado; 104 testes frontend aprovados; Ruff e build aprovados**. As restrições reconhecidas são verificadas antes da persistência, mas o parser não cobre toda linguagem natural. O relatório detalha essa limitação e preserva os resultados intermediários.
 
 ### Otimização e avaliação dos prompts
 
@@ -819,15 +833,26 @@ O contrato é um argumento `request` com `title`, `requester_name`, `idempotency
 
 O chamador escolhe quando usar a ferramenta. Nenhuma rota do backend prescreve uma sequência de ferramentas. É possível chamar `criar_requisicao` diretamente: a verificação dos produtos e preços ocorre dentro do serviço, mesmo sem busca ou detalhamento anteriores. O agente usa o schema exposto em `tools/list`; a ferramenta declara `readOnlyHint=false` e idempotência condicionada à reutilização da mesma chave para a mesma intenção.
 
+O campo opcional `constraints` recebe limites autorizados (`max_total`, `max_unit_price`), quantidade total, categoria e nome/SKU exato quando aplicável. Pelo agente, o backend impõe as restrições extraídas do usuário; um cliente MCP direto deve informar seus limites. A ferramenta verifica essas condições e o estoque/pedido mínimo conhecido antes da transação. A mesma chave com limites diferentes gera conflito. Consulte o [contrato e os limites do parser](docs/evaluation-fixes.md).
+
 Em PowerShell, na raiz do projeto, gere uma intenção de teste uma única vez e guarde a chave para as retentativas. O comando de criação abaixo grava dados no banco do projeto:
 
 ```powershell
 New-Item -ItemType Directory -Force tmp | Out-Null
+$productId = 1 # Escolha um ID real após consultar o catálogo.
+$detailOutput = docker compose exec -T mcp-server python -m purchase_mcp.client --id $productId --url http://mcp-server:8001/mcp
+if ($LASTEXITCODE -ne 0) { throw 'Não foi possível conferir o produto.' }
+# A primeira linha da CLI lista as ferramentas; as demais contêm o JSON MCP.
+$detailResult = ($detailOutput | Select-Object -Skip 1) -join "`n" | ConvertFrom-Json
+$product = $detailResult.structuredContent.product
+if ($detailResult.isError -or $null -eq $product) { throw 'Produto não confirmado.' }
+$quantity = [Math]::Max(1, [int]$product.minimum_order_quantity)
+if ($null -ne $product.stock -and $product.stock -lt $quantity) { throw 'Estoque insuficiente.' }
 $purchaseRequest = @{
     title = 'MCP test request'
     requester_name = 'Local tester'
     idempotency_key = [guid]::NewGuid().ToString()
-    items = @(@{ product_id = 1; quantity = 2 })
+    items = @(@{ product_id = $productId; quantity = $quantity })
 }
 $purchaseRequest | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 tmp/purchase-request.json
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -851,7 +876,7 @@ $created.result | ConvertTo-Json -Depth 20
 
 1. O serviço procura a chave de idempotência antes de consultar a DummyJSON. Uma chave já gravada retorna o snapshot persistido; não há nova cotação nem nova gravação, inclusive se a API externa estiver indisponível.
 2. Para uma nova chave, cada produto é consultado por `ProductClient.get_product`. Um produto inexistente ou falha da API interrompe a operação antes da transação de escrita.
-3. O código calcula `unit_price`, `subtotal = unit_price × quantity` e `total` com `Decimal`. A precisão é de duas casas, com `ROUND_HALF_UP`, em conformidade com os campos `NUMERIC`; valores acima da capacidade das colunas são rejeitados. Desconto, frete, tributos e câmbio não são inferidos.
+3. O código calcula `unit_price`, `subtotal = unit_price × quantity` e `total` com `Decimal`. A precisão é de duas casas, com `ROUND_HALF_UP`, em conformidade com os campos `NUMERIC`; valores acima da capacidade das colunas são rejeitados. Antes de gravar, confere limites totais/unitários, quantidade, categoria/produto exato, estoque e pedido mínimo conhecido. Desconto, frete, tributos e câmbio não são inferidos.
 4. Cabeçalho, chave, fingerprint, preços, subtotais e itens são gravados numa única transação `sessionmaker.begin()`. Uma falha desfaz todos os inserts. A resposta só é retornada após o commit.
 5. A chave possui índice único no PostgreSQL. Tentativas concorrentes são reconciliadas pela restrição de unicidade e uma nova leitura. A mesma chave com outro título, solicitante, produto ou quantidade gera `idempotency_conflict`; a ordem dos itens não altera a identidade da intenção.
 
@@ -861,7 +886,7 @@ Os modelos originais foram estendidos, preservando as duas tabelas. Novos campos
 
 ### Falhas e segurança
 
-Além dos erros da integração já documentados, a criação retorna erros MCP com códigos `idempotency_conflict`, `invalid_amount`, `database_unavailable` ou `database_error`. Eles não incluem SQL, parâmetros, credenciais nem detalhes do driver. Em caso de falha de comunicação durante o commit, repita a chamada com a mesma chave: a leitura persistente reconcilia uma possível gravação já concluída. Os logs contêm apenas tipo de falha, contagem e indicador de repetição, sem solicitante, título, itens, preços, totais ou chave de idempotência.
+Além dos erros da integração já documentados, a criação retorna erros MCP com códigos `idempotency_conflict`, `invalid_amount`, `budget_exceeded`, `purchase_constraints_violated`, `database_unavailable` ou `database_error`. Eles não incluem SQL, parâmetros, credenciais nem detalhes do driver. Em caso de falha de comunicação durante o commit, repita a chamada com a mesma chave: a leitura persistente reconcilia uma possível gravação já concluída. Os logs contêm apenas tipo de falha, contagem e indicador de repetição, sem solicitante, título, itens, preços, totais ou chave de idempotência.
 
 Os preços vêm exclusivamente da API e são guardados como snapshot; não há aceitação de preços do LLM, nem SQL construído a partir dos argumentos. O endpoint MCP é publicado somente em `127.0.0.1` no host, e os serviços continuam se comunicando pela rede interna. Esta configuração local ainda não tem autenticação ou autorização por usuário: `requester_name` é um dado informado, não uma identidade verificada. Uma futura exposição remota precisa de controle de acesso confiável; a chave de idempotência não substitui autenticação.
 

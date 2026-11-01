@@ -32,7 +32,7 @@ async def test_found_products_match_only_the_api_response(product_client, catalo
     assert "private@example.test" not in result.model_dump_json()
     assert "phone & charger" not in caplog.text
     assert "count=2" in caplog.text
-    assert len(catalog.calls) == 1
+    assert [call.url.path for call in catalog.calls] == ["/products/search", "/products/category-list"]
     request = catalog.calls[0]
     assert request.url.path == "/products/search"
     assert dict(request.url.params) == {"q": "phone & charger/?"}
@@ -113,6 +113,28 @@ async def test_category_response_cannot_substitute_unrelated_products(product_cl
     with pytest.raises(ProductAPIError) as caught:
         await product_client.search_products("skin care")
     assert caught.value.code == "invalid_response"
+
+
+async def test_exact_category_replaces_incomplete_nonempty_text_matches(product_client, catalog):
+    catalog.categories = ["fixture-category"]
+    catalog.search = {"products": [catalog.products[2]], "total": 1, "skip": 0, "limit": 1}
+    catalog.category_results["fixture-category"] = {
+        "products": [catalog.products[1]], "total": 1, "skip": 0, "limit": 1,
+    }
+    result = await product_client.search_products("fixture category")
+    assert result.category == "fixture-category" and result.match_type == "category"
+    assert [product.id for product in result.products] == [1]
+    assert result.products[0].price == Decimal(str(catalog.products[1]["price"]))
+    assert catalog.calls[-1].url.params["limit"] == "0"
+
+
+async def test_partial_category_page_is_not_presented_as_complete(product_client, catalog):
+    catalog.categories = ["fixture-category"]
+    catalog.category_results["fixture-category"] = {
+        "products": [catalog.products[1]], "total": 2, "skip": 0, "limit": 1,
+    }
+    with pytest.raises(ProductAPIError, match="invalid_response"):
+        await product_client.search_products("fixture-category")
 
 
 @pytest.mark.parametrize("term", ["", " ", "\t\n", "\u00a0"])

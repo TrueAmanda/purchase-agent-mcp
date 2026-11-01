@@ -274,6 +274,6 @@ async def test_invalid_llm_prices_are_rejected_before_mcp_and_never_persisted(fl
     tampered["request"]["items"][0]["unit_price"] = "0.01"
     harness.responses = [completion(None, [tool_call("criar_requisicao", tampered)]), completion("Invalid tool arguments.")]
     response = await post(flow)
-    assert response.status_code == 502 and response.json()["detail"]["code"] == "tool_execution_failed"
+    assert response.status_code == 422 and response.json()["detail"]["code"] == "invalid_tool_arguments"
     assert response.json()["tool_trace"] == []
     assert bridge.state.mcp_calls == [] and counts(bridge) == (0, 0)

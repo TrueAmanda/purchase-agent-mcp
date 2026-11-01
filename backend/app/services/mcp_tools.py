@@ -1,6 +1,7 @@
 """Official MCP adapter. Discovery supplies schemas; the LLM supplies call order."""
 
 import asyncio
+from copy import deepcopy
 from contextlib import asynccontextmanager
 from datetime import timedelta
 import json
@@ -18,6 +19,7 @@ from referencing import Registry
 from app.core.agent_errors import AgentError, ToolExecutionError
 from app.core.mcp_config import MCPSettings
 from app.schemas.agent import ToolDefinition, ToolExecutionResult
+from app.services.purchase_policy import PurchasePolicy
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,8 @@ SAFE_TOOL_ERRORS = {
     "database_error": "Purchase storage failed; creation is unconfirmed.",
     "idempotency_conflict": "This key was already used for different purchase data.",
     "invalid_amount": "The catalog amount exceeds supported precision.",
+    "budget_exceeded": "Current catalog prices exceed the user's total or per-unit limit. Nothing was saved. Choose an eligible option without changing the limits.",
+    "purchase_constraints_violated": "The items violate the requested quantity/category, stock or minimum order. Nothing was saved. Correct the selection without relaxing user constraints.",
 }
 
 
@@ -56,6 +60,11 @@ class MCPToolProvider:
         self._tools = {}
         self._write_keys = {}
         self._suggested_write_key = str(uuid4())
+        self._purchase_policy = None
+
+    def bind_purchase_context(self, message: str, history: list[dict]) -> str:
+        self._purchase_policy = PurchasePolicy.from_messages(history, message)
+        return self._purchase_policy.prompt()
 
     @asynccontextmanager
     async def _session(self):
@@ -127,7 +136,21 @@ class MCPToolProvider:
         except Exception:
             raise ToolExecutionError(code="invalid_tool_arguments", invoked=False) from None
         if name == "criar_requisicao":
+            arguments = deepcopy(arguments)
             request = arguments["request"]
+            if self._purchase_policy is not None:
+                if self._purchase_policy.clarification:
+                    return ToolExecutionResult({"error": {"code": "purchase_constraints_unclear", "message":
+                        "No write was attempted. Ask the user to clarify USD total/per-unit limits and quantities before creation."}}, invoked=False)
+                # The model cannot weaken, omit or invent limits extracted from user text.
+                if self._purchase_policy.limits:
+                    request["constraints"] = dict(self._purchase_policy.limits)
+                else:
+                    request.pop("constraints", None)
+                try:
+                    inputs.validate(arguments)
+                except Exception:
+                    raise ToolExecutionError(code="invalid_tool_arguments", invoked=False) from None
             intent = json.dumps({key: value for key, value in request.items() if key != "idempotency_key"},
                                 sort_keys=True, ensure_ascii=False)
             previous_key = self._write_keys.setdefault(intent, request["idempotency_key"])
@@ -161,6 +184,8 @@ class MCPToolProvider:
             if not isinstance(data, dict) or len(json.dumps(data, allow_nan=False)) > 100000:
                 raise ValueError
             outputs.validate(data)
+            if self._purchase_policy is not None and name in {"buscar_produtos", "detalhar_produto"}:
+                return self._purchase_policy.with_budget_checks(data)
             return data
         except Exception:
             raise ToolExecutionError(code="invalid_tool_result") from None

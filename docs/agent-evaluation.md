@@ -50,7 +50,9 @@ Executar novamente com o mesmo `--state` **apenas imprime o relatório salvo**, 
 
 Uma nova avaliação paga, deliberada, usa outro arquivo, por exemplo `--state /evaluation-data/run-02.json`. Ela representa uma nova intenção de teste, com títulos únicos, e pode criar novas requisições. Não use novo diário para repetir uma compra com resultado incerto. A idempotência interna continua sendo responsabilidade da ferramenta existente; o avaliador detecta gravações duplicadas, mas não altera as decisões do LLM nem desfaz compras já confirmadas. Não use `docker compose down -v`.
 
-## Resultado real em 01/11/2026
+## Resultado original em 01/11/2026
+
+Após investigar e corrigir proteções financeiras, busca por categoria e tratamento de argumentos, uma nova rodada ficou em **4/5 (80%)**. O histórico original abaixo permanece intacto. Veja [causas, alterações, rodadas intermediárias e resultado atualizado](evaluation-fixes.md).
 
 Modelo configurado: `openai/gpt-4.1-mini`. Execução `22eb1a77-eda2-4b2d-9ea7-db0978781099`, cinco POSTs, sem repetição para melhorar a pontuação:
 

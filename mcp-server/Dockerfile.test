@@ -9,6 +9,7 @@ COPY mcp-server/purchase_mcp ./mcp-server/purchase_mcp
 COPY mcp-server/tests ./mcp-server/tests
 COPY backend/app ./backend/app
 COPY backend/tests ./backend/tests
+COPY backend/evals/purchase_evaluation.py ./backend/evals/purchase_evaluation.py
 COPY tests/manual ./tests/manual
 COPY test_support ./test_support
 COPY pytest.ini conftest.py ./

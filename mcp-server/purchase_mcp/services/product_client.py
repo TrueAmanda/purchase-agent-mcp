@@ -48,17 +48,17 @@ class ProductClient:
             "/products/search", ProductSearchPayload, params={"q": term}
         )
         category = None
-        if not payload.products:
-            # Resolve labels only against upstream slugs, never an invented category/product map.
-            categories = await self._get_model("/products/category-list", ProductCategoryList)
-            normalized = self._normalize_category(term)
-            matches = [slug for slug in categories.root if self._normalize_category(slug) == normalized]
-            if len(matches) == 1:
-                category = matches[0]
-                payload = await self._get_model(f"/products/category/{category}", ProductSearchPayload)
-                if any(product.category != category for product in payload.products):
-                    logger.warning("Product search failed: code=invalid_response")
-                    raise ProductAPIError("invalid_response", "Product API returned a different product category.")
+        # A nonempty substring search can still miss most of an exact category.
+        # Resolve only against upstream slugs, never an invented product/category map.
+        categories = await self._get_model("/products/category-list", ProductCategoryList)
+        normalized = self._normalize_category(term)
+        matches = [slug for slug in categories.root if self._normalize_category(slug) == normalized]
+        if len(matches) == 1:
+            category = matches[0]
+            payload = await self._get_model(f"/products/category/{category}", ProductSearchPayload, params={"limit": "0"})
+            if payload.skip != 0 or len(payload.products) != payload.total or any(product.category != category for product in payload.products):
+                logger.warning("Product search failed: code=invalid_response")
+                raise ProductAPIError("invalid_response", "Product API returned an incomplete or different product category.")
         status = "success" if payload.products else "no_results"
         logger.info(
             "Product search completed: status=%s count=%s total=%s duration_ms=%s",

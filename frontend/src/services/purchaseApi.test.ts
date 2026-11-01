@@ -63,6 +63,17 @@ describe('purchase API', () => {
     await expect(submitPurchase('Teste')).rejects.toThrow('Confira o pedido enviado');
   });
 
+  it.each([
+    ['budget_exceeded', 'ultrapassam seu orçamento'],
+    ['purchase_constraints_violated', 'não atendem às quantidades'],
+    ['purchase_constraints_unclear', 'Informe claramente o orçamento'],
+    ['invalid_tool_arguments', 'bloqueada antes da execução'],
+  ])('explains %s without displaying a provider body', async (code, message) => {
+    fetchMock.mockResolvedValue(jsonResponse({ detail: { code, message: 'private-error' } }, 422));
+    await expect(submitPurchase('Crie')).rejects.toThrow(message);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('handles network failures without retries or definitive write failure claims', async () => {
     fetchMock.mockRejectedValue(new TypeError('private-network-details'));
     await expect(submitPurchase('Crie uma compra')).rejects.toMatchObject({ code: 'connection_error', uncertain: true });

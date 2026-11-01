@@ -32,4 +32,11 @@ describe('public trace decoding', () => {
   it('does not fabricate a duration when it is missing', () => {
     expect(decodeToolTrace([{ ...trace[0], duration_ms: undefined }])![0].duration_ms).toBeNull();
   });
+
+  it.each(['budget_exceeded', 'purchase_constraints_violated'])('preserves the safe rejection code %s', (code) => {
+    const result = decodeToolTrace([{ ...trace[1], status: 'error', code, result: { item_count: 999 } }])!;
+    expect(result[0].status).toBe('error');
+    expect(result[0].code).toBe(code);
+    expect(result[0].result).toBeNull();
+  });
 });

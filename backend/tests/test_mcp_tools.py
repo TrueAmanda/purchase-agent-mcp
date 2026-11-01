@@ -365,4 +365,4 @@ async def test_conversation_follow_up_uses_original_mcp_product_evidence(bridge,
     previous_data = json.loads(next(entry["content"] for entry in harness.requests[2]["messages"] if entry["role"] == "tool"))
     assert previous_data["products"][1]["id"] == 2
     assert previous_data["products"][1]["price"] == "0.1"
-    assert bridge.state.calls == ["/products/search", "/products/2"] and counts(bridge) == (0, 0)
+    assert bridge.state.calls == ["/products/search", "/products/category-list", "/products/2"] and counts(bridge) == (0, 0)

@@ -15,8 +15,8 @@ def register_product_tools(server: FastMCP) -> None:
     async def buscar_produtos(termo: str, ctx: Context) -> ProductSearchResult:
         """Search DummyJSON using nonempty English product keywords or category labels.
 
-        If text search is empty and the term matches an official category
-        (e.g. 'skin care' or 'skin-care'), query that category. match_type and
+        If the term matches an official category (e.g. 'skin care' or 'skin-care'),
+        return the complete category even if text search found some matches. match_type and
         category identify the returned scope. Other empty text queries do not
         establish category absence. Amounts are denominated in USD.
         """
@@ -30,7 +30,11 @@ def register_product_tools(server: FastMCP) -> None:
     async def detalhar_produto(
         id: Annotated[int, Field(gt=0, strict=True)], ctx: Context
     ) -> ProductDetailResult:
-        """Get a DummyJSON product by positive integer ID; report missing products as errors."""
+        """Get a DummyJSON product by positive integer ID; report missing products as errors.
+
+        id is a numeric catalog identifier, never a product name, model code or UUID.
+        For names/model codes without a known numeric ID, use buscar_produtos instead.
+        """
         client: ProductClient = ctx.request_context.lifespan_context["product_client"]
         try:
             return await client.get_product(id)

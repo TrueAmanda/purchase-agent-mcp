@@ -411,7 +411,8 @@ async def test_trace_excludes_locally_blocked_calls_and_unapproved_names(api_cli
         ToolExecutionEvent(name="detalhar_produto", outcome="ok", result={"product": {"id": 1}}),
     )
     response = await api_client.post("/requisicoes", json={"message": "Teste", "include_tool_trace": True})
-    assert response.status_code == 502
+    # A later successful catalog call recovers the earlier local argument error.
+    assert response.status_code == 200 and response.json()["requisitions"] == []
     trace = response.json()["tool_trace"]
     assert len(trace) == 1 and trace[0]["name"] == "detalhar_produto" and trace[0]["order"] == 1
     assert "private-tool-name" not in response.text

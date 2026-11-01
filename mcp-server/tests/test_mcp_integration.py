@@ -69,7 +69,9 @@ async def test_all_tools_over_tcp_validate_input_output_and_persist(
     assert created["items"][0]["quantity"] == 3
     assert type(created["items"][0]["unit_price"]) is str
     assert db_counts() == (1, 1)
-    assert len(catalog.calls) == 3
+    assert [request.url.path for request in catalog.calls] == [
+        "/products/search", "/products/category-list", "/products/1", "/products/1",
+    ]
 
 
 @pytest.mark.parametrize("name,arguments", [

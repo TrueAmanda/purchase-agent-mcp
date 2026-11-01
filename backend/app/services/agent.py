@@ -99,6 +99,9 @@ class AgentService:
     ) -> AgentResult:
         definitions, validators = await self._load_tools()
         prompt = build_system_prompt(tools_available=bool(definitions))
+        bind_context = getattr(self.tools, "bind_purchase_context", None)
+        if bind_context is not None:
+            prompt += bind_context(message, history)
         messages.extend([{"role": "system", "content": prompt}, *history, {"role": "user", "content": message}])
         executed = 0
         seen_call_ids = set()
@@ -177,6 +180,12 @@ class AgentService:
             result = {"error": {"code": outcome, "message": TOOL_ERROR_MESSAGES.get(
                 outcome, "Tool execution was not confirmed; do not invent a result.",
             )}}
+            if outcome == "invalid_tool_arguments" and call.function.name == "detalhar_produto":
+                result["error"]["message"] = (
+                    "No tool was invoked. id must be a positive JSON INTEGER from the catalog, "
+                    "not a name, model code, string or UUID. If only a product name/model is known, "
+                    "you may search it using buscar_produtos with a nonempty termo, then decide how to proceed."
+                )
             content = json.dumps(result)
         duration_ms = round((perf_counter() - started) * 1000, 1)
         # Only fixed capability names may enter logs; never args, bodies, or user text.

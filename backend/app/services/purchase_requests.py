@@ -32,6 +32,10 @@ TOOL_FAILURES = {
     "invalid_amount": (422, "The catalog amount exceeds supported storage precision."),
     "mcp_unavailable": (503, "MCP communication failed. A write may have completed; check saved requisitions before retrying."),
     "tool_timeout": (504, "A tool timed out. A write may have completed; check saved requisitions before retrying."),
+    "invalid_tool_arguments": (422, "The assistant supplied invalid tool arguments; that call was rejected before execution."),
+    "budget_exceeded": (422, "The selected products exceed the authorized total or per-unit budget. No purchase was saved."),
+    "purchase_constraints_violated": (422, "The selected items do not satisfy the purchase constraints. No purchase was saved."),
+    "purchase_constraints_unclear": (422, "Clarify the USD total/per-unit budget and quantities before creating a purchase."),
 }
 
 
@@ -138,9 +142,16 @@ class PurchaseRequestService:
         events = result.tool_events
         receipts = []
         failed_events = []
-        for event in events:
+        for index, event in enumerate(events):
             failed = _event_failed(event)
             if failed:
+                # A local argument rejection can be corrected by the model in a later
+                # round. It is neither an MCP invocation nor an upstream outage.
+                if (not event.invoked and event.outcome == "invalid_tool_arguments"
+                        and any(later.invoked and not _event_failed(later)
+                                and later.name in {"buscar_produtos", "detalhar_produto", "criar_requisicao"}
+                                for later in events[index + 1:])):
+                    continue
                 failed_events.append(event)
             elif event.name == "criar_requisicao":
                 try:
@@ -154,7 +165,7 @@ class PurchaseRequestService:
                 tool_trace=self._trace(events) if include_trace else None,
             ), 200 if all(purchase.replayed for purchase in purchases) else 201
         if failed_events:
-            for event in failed_events:
+            for event in sorted(failed_events, key=lambda entry: not entry.invoked):
                 code = _error_code(event)
                 if code in TOOL_FAILURES:
                     status, message = TOOL_FAILURES[code]
