@@ -64,7 +64,7 @@ class ToolTraceEntry(BaseModel):
 
 class PurchaseMessageResponse(BaseModel):
     status: Literal["created", "no_results", "response"]
-    message: str = Field(description="Agent text; use status and requisitions to determine confirmed registration.")
+    message: str = Field(description="Evidence-backed catalog/registration text or a planning question. Use status and requisitions to determine confirmed registration.")
     requisitions: list[ConfirmedPurchaseRequest] = Field(default_factory=list)
     tool_trace: list[ToolTraceEntry] | None = None
     conversation_id: UUID | None = None

@@ -28,6 +28,8 @@ router = APIRouter(prefix="/requisicoes", tags=["purchase requests"])
         "Tools and their schemas are discovered through MCP; the model chooses the call sequence. "
         "include_tool_trace returns sanitized invocation order, status and duration on responses and execution errors. "
         "Send conversation_id=null to start server-owned context, then the returned UUID to continue; omit for independent requests. "
+        "Each conversation represents one purchase intent. Optional Idempotency-Key (UUID) identifies that intent across retries/restarts; "
+        "reuse it after uncertain outcomes. Without this header, identical independent messages derive the same key. "
         "200: agent response, empty catalog, or confirmed idempotent replay. 201: confirmed new registration."
     ),
     responses={
@@ -41,6 +43,9 @@ router = APIRouter(prefix="/requisicoes", tags=["purchase requests"])
         503: {"model": APIErrorResponse, "description": "Database, MCP, DummyJSON or LLM unavailable/misconfigured"},
         504: {"model": APIErrorResponse, "description": "Agent, provider or tool timeout; a write may have completed"},
     },
+    openapi_extra={"parameters": [{"name": "Idempotency-Key", "in": "header", "required": False,
+                                   "schema": {"type": "string", "format": "uuid"},
+                                   "description": "Stable purchase intent UUID; reuse on retries, never rotate after uncertainty."}]},
 )
 async def submit_purchase_request(
     payload: PurchaseMessageInput, response: Response,

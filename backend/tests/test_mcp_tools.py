@@ -91,7 +91,7 @@ async def test_external_failures_reach_llm_and_safe_http_errors(
     app.state.session_factory = bridge.sessions
     app.dependency_overrides[get_agent] = lambda: agent
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
-        response = await http.post("/requisicoes", json={"message": "Create fixture purchase"})
+        response = await http.post("/requisicoes", json={"message": "Create fixture purchase, exactly 6 items, product 1 and product 2"})
     assert response.status_code == status and response.json()["detail"]["code"] == code
     history = harness.requests[1]["messages"]
     tool_result = json.loads(history[-1]["content"])
@@ -123,7 +123,7 @@ async def test_model_selects_order_and_post_confirms_actual_rows(bridge, harness
     app.state.session_factory = bridge.sessions
     app.dependency_overrides[get_agent] = lambda: agent
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
-        response = await http.post("/requisicoes", json={"message": "Create this purchase", "include_tool_trace": True})
+        response = await http.post("/requisicoes", json={"message": "Create this purchase, exactly 6 items, product 1 and product 2", "include_tool_trace": True})
         saved = await http.get("/requisicoes")
     assert response.status_code == 201
     body = response.json()
@@ -307,7 +307,7 @@ async def test_local_retry_guard_is_excluded_from_public_trace(bridge, harness, 
         completion("The original registration exists; the local retry was blocked."),
     ]
     agent = AgentService(OpenRouterClient(harness.settings, llm_http), harness.settings, bridge.provider)
-    response, status = await PurchaseRequestService(bridge.sessions).submit("Create fixture purchase", agent, True)
+    response, status = await PurchaseRequestService(bridge.sessions).submit("Create fixture purchase, exactly 6 items, product 1 and product 2", agent, True)
     assert status == 201 and counts(bridge) == (1, 2)
     assert len(response.tool_trace) == 1 and response.tool_trace[0].order == 1
     assert response.tool_trace[0].name == "criar_requisicao"

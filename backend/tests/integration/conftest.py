@@ -1,8 +1,9 @@
 """HTTP endpoints with the real agent/MCP adapters and simulated provider HTTP."""
 
 from types import SimpleNamespace
+from uuid import UUID
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 import httpx
 import pytest
 
@@ -19,9 +20,10 @@ async def flow(bridge, harness, llm_http):
     application.include_router(api_router)
     application.state.session_factory = bridge.sessions
 
-    def agent():
+    def agent(request: Request):
         # Like production, each HTTP request gets a fresh MCP adapter.
-        provider = MCPToolProvider(bridge.provider.settings, bridge.provider.http_client)
+        key = request.headers.get("Idempotency-Key")
+        provider = MCPToolProvider(bridge.provider.settings, bridge.provider.http_client, intent_key=UUID(key) if key else None)
         return AgentService(OpenRouterClient(harness.settings, llm_http), harness.settings, provider)
 
     application.dependency_overrides[get_agent] = agent

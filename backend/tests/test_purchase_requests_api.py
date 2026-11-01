@@ -108,7 +108,7 @@ async def test_post_validates_and_forwards_message_without_writing(api_client, a
     assert response.status_code == 200
     assert api_context.agent.messages == ["Preciso de equipamentos"]
     assert response.json() == {
-        "status": "response", "message": "Quais equipamentos você precisa?", "requisitions": [], "tool_trace": None, "conversation_id": None,
+        "status": "response", "message": "Qual produto você deseja comprar?", "requisitions": [], "tool_trace": None, "conversation_id": None,
     }
     with api_context.sessions() as session:
         assert session.scalar(select(func.count()).select_from(PurchaseRequest)) == 0
@@ -252,6 +252,7 @@ async def test_trace_is_opt_in_and_never_contains_arguments_or_results(api_clien
 
 @pytest.mark.parametrize(("code", "status"), [
     ("invalid_configuration", 503), ("llm_authentication", 503), ("llm_credits", 503),
+    ("llm_budget_exceeded", 503), ("llm_forbidden", 503),
     ("llm_rate_limit", 503), ("llm_unavailable", 503), ("tool_catalog_error", 503),
     ("llm_timeout", 504), ("agent_timeout", 504), ("invalid_llm_response", 502),
     ("llm_incomplete", 502), ("llm_http_error", 502), ("iteration_limit", 502), ("tool_call_limit", 502),

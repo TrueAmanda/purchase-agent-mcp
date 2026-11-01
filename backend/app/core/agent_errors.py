@@ -7,6 +7,8 @@ MESSAGES = {
     "llm_unavailable": "The language model provider is unavailable.",
     "llm_authentication": "The language model provider rejected the credentials.",
     "llm_credits": "The language model account has insufficient credits.",
+    "llm_budget_exceeded": "The OpenRouter key or workspace spending limit has been reached. Check its budget settings.",
+    "llm_forbidden": "OpenRouter blocked this request due to permissions or policies. Check the key/workspace rules.",
     "llm_rate_limit": "The language model provider rate limit was reached.",
     "llm_http_error": "The language model provider rejected the request.",
     "invalid_llm_response": "The language model returned an invalid response.",
@@ -21,6 +23,7 @@ MESSAGES = {
     "conversation_expired": "This conversation expired or the service restarted. Start a new conversation with the full purchase details.",
     "conversation_busy": "Another message in this conversation is still being processed. Wait for its response.",
     "conversation_capacity": "The conversation service is busy. Try again later.",
+    "agent_busy": "The agent has reached its concurrent request limit. Try again later.",
 }
 
 

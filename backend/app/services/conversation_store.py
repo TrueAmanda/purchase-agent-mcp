@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 
 from app.core.agent_errors import AgentError
 from app.core.conversation_config import ConversationSettings
+from app.services.purchase_intent import PurchaseIntent
 
 
 @dataclass(repr=False)
@@ -22,6 +23,7 @@ class Conversation:
     turns: list[list[dict[str, Any]]] = field(default_factory=list, repr=False)
     busy: bool = False
     retained: bool = True
+    intent: PurchaseIntent = field(default_factory=PurchaseIntent, repr=False)
 
     def history(self) -> list[dict[str, Any]]:
         return deepcopy([message for turn in self.turns for message in turn])

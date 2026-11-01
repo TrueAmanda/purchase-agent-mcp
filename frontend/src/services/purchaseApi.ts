@@ -30,6 +30,8 @@ const errorMessages: Record<string, string> = {
   llm_rate_limit: 'O assistente está recebendo muitos pedidos. Aguarde antes de tentar novamente.',
   llm_authentication: 'O assistente não conseguiu acessar o provedor. Verifique a configuração do serviço.',
   llm_credits: 'O provedor do assistente está sem saldo disponível.',
+  llm_budget_exceeded: 'O limite de gastos da chave ou do workspace na OpenRouter foi atingido. Verifique o orçamento no painel da OpenRouter.',
+  llm_forbidden: 'A OpenRouter bloqueou esta solicitação por permissões ou políticas. Confira as regras da chave e do workspace.',
   invalid_configuration: 'O assistente precisa ser configurado para receber pedidos.',
   invalid_mcp_configuration: 'A conexão com o serviço de ferramentas precisa ser configurada.',
   invalid_llm_response: 'O assistente retornou uma resposta inválida. A operação não foi confirmada.',
@@ -47,6 +49,8 @@ const errorMessages: Record<string, string> = {
   budget_exceeded: 'Os produtos selecionados ultrapassam seu orçamento total ou por unidade. Nenhuma requisição foi gravada.',
   purchase_constraints_violated: 'Os itens não atendem às quantidades, categoria, estoque ou pedido mínimo. Nenhuma requisição foi gravada.',
   purchase_constraints_unclear: 'Informe claramente o orçamento em US$ (total ou por unidade) e as quantidades antes de criar a requisição.',
+  purchase_not_authorized: 'A criação não foi autorizada. Nenhuma gravação foi realizada.',
+  agent_busy: 'O assistente está processando o limite de pedidos simultâneos. Aguarde antes de tentar novamente.',
   conversation_expired: 'Esta conversa expirou ou o serviço reiniciou. Clique em Nova conversa e informe novamente os detalhes do pedido.',
   conversation_busy: 'Outra mensagem desta conversa está sendo processada. Aguarde a resposta antes de continuar.',
   conversation_capacity: 'O serviço de conversas está ocupado. Aguarde antes de tentar novamente.',
@@ -117,13 +121,13 @@ async function request(path: string, init: RequestInit, timeoutMs = POST_TIMEOUT
   } finally { clearTimeout(timeout); }
 }
 
-export async function submitPurchase(message: string, currentConversationId: string | null = null): Promise<PurchaseResponse> {
+export async function submitPurchase(message: string, currentConversationId: string | null = null, intentKey?: string): Promise<PurchaseResponse> {
   const trimmed = message.trim();
   if (!trimmed || trimmed.length > 20_000) {
     throw new PurchaseApiError('Escreva um pedido com até 20.000 caracteres.', 'invalid_message', false);
   }
   const payload = await request('/requisicoes', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...(intentKey ? { 'Idempotency-Key': intentKey } : {}) },
     body: JSON.stringify({ message: trimmed, include_tool_trace: true, conversation_id: currentConversationId }),
   });
   if (!purchaseResponse(payload)) {

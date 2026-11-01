@@ -8,7 +8,6 @@ from time import perf_counter
 from typing import Any
 
 from jsonschema import Draft202012Validator
-from referencing import Registry
 
 from app.core.agent_config import AgentSettings
 from app.core.agent_errors import AgentError, ToolExecutionError, TOOL_ERROR_MESSAGES
@@ -16,6 +15,7 @@ from app.core.agent_prompt import build_system_prompt
 from app.schemas.agent import AgentResult, ToolCall, ToolDefinition, ToolExecutionEvent
 from app.services.agent_tools import EmptyToolProvider, ToolProvider
 from app.services.openrouter import OpenRouterClient
+from app.services.tool_validation import tool_validator
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +68,7 @@ class AgentService:
                     raise ValueError
                 if definition.parameters.get("type") != "object":
                     raise ValueError
-                Draft202012Validator.check_schema(definition.parameters)
-                # An empty registry forbids network retrieval of external $ref schemas.
-                validators[definition.name] = Draft202012Validator(definition.parameters, registry=Registry())
+                validators[definition.name] = tool_validator(definition.parameters)
             return definitions, validators
         except AgentError:
             raise
@@ -110,9 +108,25 @@ class AgentService:
             logger.info("agent_round iteration=%d requested_tools=%d", iteration, len(reply.tool_calls))
             if not reply.tool_calls:
                 messages.append(reply.as_history_message())
+                catalog = {}
+                names = {}
+                for entry in messages:
+                    if entry.get("role") == "assistant":
+                        names.update({call["id"]: call["function"]["name"] for call in entry.get("tool_calls", [])})
+                    elif entry.get("role") == "tool" and names.get(entry["tool_call_id"]) in {"buscar_produtos", "detalhar_produto"}:
+                        try:
+                            data = json.loads(entry["content"])
+                            for product in data.get("products", [data["product"]] if "product" in data else []):
+                                if isinstance(product, dict) and product.get("id") is not None:
+                                    catalog[product["id"]] = product
+                        except (ValueError, TypeError, AttributeError):
+                            pass  # Error replies never establish catalog facts.
                 return AgentResult(
                     content=reply.content, iterations=iteration, tool_calls=executed, tool_events=events,
                     conversation_messages=deepcopy(messages[len(history) + 1:]),
+                    user_message=message,
+                    catalog_products=list(catalog.values()),
+                    purchase_limits=dict(getattr(getattr(self.tools, "_purchase_policy", None), "limits", {})),
                 )
             if len(reply.tool_calls) > self.settings.max_tool_calls_per_iteration:
                 raise AgentError("tool_call_limit")

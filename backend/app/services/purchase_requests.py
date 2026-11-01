@@ -17,6 +17,7 @@ from app.schemas.purchase_requests import (
     PurchaseRequestRead,
 )
 from app.services.tool_trace import build_tool_trace, error_code as _error_code, event_failed as _event_failed
+from app.services.grounded_response import confirmed_message, grounded_message
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ TOOL_FAILURES = {
     "budget_exceeded": (422, "The selected products exceed the authorized total or per-unit budget. No purchase was saved."),
     "purchase_constraints_violated": (422, "The selected items do not satisfy the purchase constraints. No purchase was saved."),
     "purchase_constraints_unclear": (422, "Clarify the USD total/per-unit budget and quantities before creating a purchase."),
+    "purchase_not_authorized": (422, "Purchase creation was not authorized. No write was attempted."),
 }
 
 
@@ -157,7 +159,7 @@ class PurchaseRequestService:
         if receipts:
             purchases = await run_in_threadpool(self._confirm, receipts)
             return PurchaseMessageResponse(
-                status="created", message=result.content, requisitions=purchases,
+                status="created", message=confirmed_message(purchases, result.user_message), requisitions=purchases,
                 tool_trace=build_tool_trace(events) if include_trace else None,
             ), 200 if all(purchase.replayed for purchase in purchases) else 201
         if failed_events:
@@ -174,5 +176,6 @@ class PurchaseRequestService:
             )
         return PurchaseMessageResponse(
             status="no_results" if self._only_empty_searches(events) else "response",
-            message=result.content, tool_trace=build_tool_trace(events) if include_trace else None,
+            message=grounded_message(result, empty_search=self._only_empty_searches(events)),
+            tool_trace=build_tool_trace(events) if include_trace else None,
         ), 200

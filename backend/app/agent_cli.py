@@ -12,6 +12,11 @@ from app.core.mcp_config import MCPSettings
 from app.services.agent import AgentService
 from app.services.openrouter import OpenRouterClient
 from app.services.mcp_tools import MCPToolProvider
+from app.services.grounded_response import grounded_message
+from app.services.purchase_requests import PurchaseAPIError, PurchaseRequestService
+from purchase_storage.config import Settings
+from purchase_storage.database import build_engine
+from sqlalchemy.orm import sessionmaker
 
 
 async def run(message: str) -> int:
@@ -21,9 +26,18 @@ async def run(message: str) -> int:
             result = await AgentService(
                 OpenRouterClient(settings, client), settings, MCPToolProvider(MCPSettings.from_environment()),
             ).run(message)
+        if any(event.name == "criar_requisicao" and event.outcome == "ok" and not (event.result or {}).get("error") for event in result.tool_events):
+            engine = build_engine(Settings.from_environment())
+            try:
+                response, _ = await PurchaseRequestService(sessionmaker(engine))._respond(result, False)
+                result.content = response.message
+            finally:
+                engine.dispose()
+        else:
+            result.content = grounded_message(result, empty_search=PurchaseRequestService._only_empty_searches(result.tool_events))
         print(result.model_dump_json(indent=2))
         return 0
-    except AgentError as error:
+    except (AgentError, PurchaseAPIError) as error:
         print(f"{error.code}: {error}")
         return 1
 

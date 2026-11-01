@@ -23,9 +23,27 @@ class _Completion(BaseModel):
     choices: list[_Choice] = Field(min_length=1, max_length=1)
 
 
-def _http_error(status: int) -> AgentError:
+def _http_error(response: httpx.Response) -> AgentError:
+    status = response.status_code
+    if status == 403:
+        # 403 can mean spending limits or policy blocks, not invalid credentials.
+        # Inspect only allowlisted signals; never forward/log the provider body.
+        try:
+            data = response.json()
+            error = data.get("error", {}) if isinstance(data, dict) else {}
+            metadata = error.get("metadata", {}) if isinstance(error, dict) else {}
+            source = metadata.get("limit_source") if isinstance(metadata, dict) else None
+            message = error.get("message", "") if isinstance(error, dict) else ""
+        except ValueError:
+            source, message = None, ""
+        if ((isinstance(source, str) and source in {"openrouter_key_limit", "openrouter_workspace_budget", "openrouter_guardrail_budget"})
+                or (isinstance(message, str) and message.casefold().startswith((
+                    "key limit exceeded", "budget limit exceeded", "workspace limit exceeded",
+                )))):
+            return AgentError("llm_budget_exceeded")
+        return AgentError("llm_forbidden")
     codes = {
-        401: "llm_authentication", 403: "llm_authentication", 402: "llm_credits",
+        401: "llm_authentication", 402: "llm_credits",
         408: "llm_timeout", 429: "llm_rate_limit",
     }
     return AgentError(codes.get(status, "llm_unavailable" if status >= 500 else "llm_http_error"))
@@ -61,7 +79,7 @@ class OpenRouterClient:
                 json=payload, timeout=self.settings.timeout_seconds, follow_redirects=False,
             )
             if not response.is_success:
-                raise _http_error(response.status_code)
+                raise _http_error(response)
             try:
                 data = response.json()
                 if isinstance(data, dict) and "error" in data:

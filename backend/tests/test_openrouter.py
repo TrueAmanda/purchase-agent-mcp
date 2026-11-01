@@ -26,7 +26,7 @@ async def test_provider_parameters_and_optional_tools(harness, llm_http):
 
 
 @pytest.mark.parametrize(("status", "code"), [
-    (400, "llm_http_error"), (401, "llm_authentication"), (403, "llm_authentication"),
+    (400, "llm_http_error"), (401, "llm_authentication"), (403, "llm_forbidden"),
     (402, "llm_credits"), (408, "llm_timeout"), (429, "llm_rate_limit"),
     (500, "llm_unavailable"), (502, "llm_unavailable"), (503, "llm_unavailable"),
     (307, "llm_http_error"),
@@ -39,6 +39,30 @@ async def test_http_failures_are_safe_and_not_retried(harness, llm_http, status,
     assert "private" not in str(caught.value)
     assert "private" not in caplog.text
     assert len(harness.requests) == 1
+
+
+@pytest.mark.parametrize("metadata,message", [
+    ({"limit_source": "openrouter_key_limit"}, "private-provider-body"),
+    ({"limit_source": "openrouter_workspace_budget"}, "private-provider-body"),
+    ({"limit_source": "openrouter_guardrail_budget"}, "private-provider-body"),
+    ({}, "Key limit exceeded (total limit). private-provider-body"),
+    ({}, "Budget limit exceeded (weekly limit). private-provider-body"),
+])
+async def test_spending_limit_403_is_not_misclassified_as_authentication(harness, llm_http, metadata, message, caplog):
+    harness.responses = [httpx.Response(403, json={"error": {"code": 403, "message": message, "metadata": metadata}})]
+    with caplog.at_level("INFO"), pytest.raises(AgentError) as caught:
+        await harness.agent(llm_http).run("Fixture question")
+    assert caught.value.code == "llm_budget_exceeded"
+    assert "private-provider-body" not in str(caught.value) and "private-provider-body" not in caplog.text
+    assert len(harness.requests) == 1 and not harness.tools.calls
+
+
+@pytest.mark.parametrize("body", [{"error": {"metadata": {"limit_source": []}}}, {"error": []}, {"error": {"metadata": []}}, []])
+async def test_malformed_forbidden_body_is_still_a_safe_permission_error(harness, llm_http, body):
+    harness.responses = [httpx.Response(403, json=body)]
+    with pytest.raises(AgentError) as caught:
+        await harness.agent(llm_http).run("Fixture question")
+    assert caught.value.code == "llm_forbidden" and len(harness.requests) == 1
 
 
 @pytest.mark.parametrize(("failure", "code"), [

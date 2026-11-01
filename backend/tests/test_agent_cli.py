@@ -19,11 +19,11 @@ async def test_cli_missing_key_returns_safe_error(capsys):
 async def test_cli_success_without_storage(monkeypatch, capsys):
     monkeypatch.setenv("OPENROUTER_API_KEY", "fixture-key")
     monkeypatch.setenv("OPENROUTER_MODEL", "fixture/model")
-    result = AgentResult(content="Fixture answer", iterations=1, tool_calls=0)
+    result = AgentResult(content="Qual produto você procura?", iterations=1, tool_calls=0)
     with patch("app.agent_cli.AgentService.run", new=AsyncMock(return_value=result)):
         assert await run("Hello") == 0
     output = capsys.readouterr().out
-    assert "Fixture answer" in output
+    assert "Qual produto" in output
     assert "fixture-key" not in output
 
 

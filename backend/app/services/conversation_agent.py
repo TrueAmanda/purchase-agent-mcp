@@ -12,6 +12,9 @@ class ConversationAgent:
         self.agent, self.conversation = agent, conversation
 
     async def run(self, message):
+        bind_intent = getattr(getattr(self.agent, "tools", None), "bind_intent", None)
+        if bind_intent is not None:
+            bind_intent(self.conversation.intent)
         try:
             result = await self.agent.run(message, history=self.conversation.history())
         except (AgentError, asyncio.CancelledError) as error:

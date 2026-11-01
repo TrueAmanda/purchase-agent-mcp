@@ -16,9 +16,9 @@ def http_error(error: AgentError | PurchaseAPIError) -> HTTPException:
         if error.code in {"llm_timeout", "agent_timeout"}:
             status = 504
         elif error.code in {
-            "invalid_configuration", "llm_authentication", "llm_credits", "llm_rate_limit",
+            "invalid_configuration", "llm_authentication", "llm_credits", "llm_rate_limit", "llm_budget_exceeded", "llm_forbidden",
             "llm_unavailable", "tool_catalog_error", "invalid_mcp_configuration", "mcp_unavailable",
-            "invalid_conversation_configuration", "conversation_capacity",
+            "invalid_conversation_configuration", "conversation_capacity", "agent_busy",
         }:
             status = 503
         elif error.code == "invalid_message":

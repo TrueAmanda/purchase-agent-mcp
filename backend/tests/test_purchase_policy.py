@@ -7,7 +7,7 @@ from app.services.purchase_policy import PurchasePolicy
 
 @pytest.mark.parametrize("message,limits", [
     ("Compre exatamente 3 itens, orçamento TOTAL de US$ 2419.98", {"quantity": 3, "max_total": "2419.98"}),
-    ("Preciso de 3 laptops até US$ 2.000 cada.", {"quantity": 3, "max_unit_price": "2000.00"}),
+    ("Preciso de 3 laptops até US$ 2.000 cada.", {"quantity": 3, "max_unit_price": "2000.00", "category": "laptops"}),
     ("Compre 2 itens, até US$ 100 por unidade.", {"quantity": 2, "max_unit_price": "100.00"}),
     ("Buy exactly 4 items with a total budget of USD 1,234.56", {"quantity": 4, "max_total": "1234.56"}),
     ("Exactly 2 items, USD 15.50 each", {"quantity": 2, "max_unit_price": "15.50"}),
@@ -103,3 +103,17 @@ def test_zero_quantity_requires_clarification_without_adjusting_it():
     assert policy.limits["quantity"] == 0
     assert "quantity must be positive" in policy.prompt()
     assert "Do not call tools" in policy.prompt()
+
+
+def test_updating_money_does_not_clear_unresolved_quantity_or_category():
+    history = [{"role": "user", "content": "Buy exactly 2 laptops and exactly 3 smartphones, total budget USD 1000."}]
+    policy = PurchasePolicy.from_messages(history, "Total budget USD 2000.")
+    assert policy.clarification and policy.ambiguities == {"quantity", "category"}
+    assert policy.limits["max_total"] == "2000.00"
+    policy.update("Buy exactly 2 laptops.")
+    assert not policy.clarification and policy.limits["quantity"] == 2
+
+
+@pytest.mark.parametrize("message", ["Como criar uma requisição?", "Only research 1 laptop.", "Quero pesquisar antes de criar."])
+def test_discussing_creation_does_not_authorize_it(message):
+    assert not PurchasePolicy.from_messages([], message).authorized

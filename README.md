@@ -33,6 +33,10 @@ Os quatro serviços devem aparecer como `healthy`. Na primeira execução, o dow
 
 A rede padrão do Compose permite resolver os nomes dos serviços por DNS. `localhost` dentro de um container aponta para esse próprio container. O navegador usa `/api/` no frontend; o Nginx encaminha esse caminho ao backend pela rede interna, removendo o prefixo. Exemplo: `http://localhost:5173/api/requisicoes` chega a `http://backend:8000/requisicoes`. O frontend serve o build React com Nginx e realiza chamadas HTTP para o backend.
 
+Os serviços HTTP são publicados somente em `127.0.0.1`. As [proteções após a auditoria](docs/security-fixes.md) incluem autorização de escrita fora do prompt, uma intenção de compra por conversa, chave idempotente controlada pelo backend, restrições preservadas fora do histórico textual e respostas comerciais compostas com dados confirmados. O modelo continua decidindo as ferramentas e sua ordem. `AGENT_MAX_CONCURRENT_RUNS` limita execuções simultâneas por processo, padrão 4; excesso retorna 503 sem acessar o LLM.
+
+Validação dessas proteções: **588 testes com PostgreSQL isolado**, **105 testes frontend**, lint e build aprovados. A nova avaliação real ficou em **0/5 por bloqueio OpenRouter nos cinco pedidos**, sem novas gravações. O diagnóstico posterior confirmou chave válida e limite de gastos total esgotado; o antigo rótulo de autenticação foi corrigido. O resultado anterior de 4/5 permanece histórico, sem reclassificação. Veja as evidências e limitações no documento de segurança.
+
 ## Configuração
 
 - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`: banco, usuário e senha.
@@ -64,7 +68,7 @@ Abra **http://localhost:5173** após `docker compose up --build -d`. O chat em p
 
 O navegador envia `POST /api/requisicoes` com `{"message":"...","include_tool_trace":true,"conversation_id":null}` no primeiro envio e reutiliza o UUID retornado nos seguintes. O Nginx encaminha para `backend:8000/requisicoes`. O frontend não chama OpenRouter, MCP ou DummyJSON diretamente e não recebe credenciais. A consulta **Requisições salvas** usa `GET /api/requisicoes?limit=10&offset=0`; permite conferir os últimos registros, inclusive depois de uma operação incerta, sem repetir a compra. **Nova conversa** limpa a tela e inicia um contexto separado no próximo envio, preservando o banco.
 
-A interface conserva mensagens e identificador da conversa em memória, sem armazenamento local. O backend mantém o contexto recente, incluindo os resultados reais das ferramentas: após encontrar uma paleta e um pó compacto, “quero mais detalhes do pó compacto” pode usar o ID já retornado. O modelo continua decidindo as chamadas; não existe um mapeamento fixo de nomes traduzidos para produtos. Atualizar a página inicia outra conversa; os registros persistidos continuam disponíveis.
+A interface conserva mensagens e identificador da conversa em memória. Somente a chave da intenção é mantida no `sessionStorage` da aba para proteger retentativas/recarregamento; **Nova conversa** a remove. O chat envia essa chave no cabeçalho opcional `Idempotency-Key` (UUID); clientes externos devem reutilizá-lo após resultado incerto. O backend mantém o contexto recente, incluindo os resultados reais das ferramentas, e preserva restrições/tentativa de compra separadamente. Após encontrar uma paleta e um pó compacto, “quero mais detalhes do pó compacto” pode usar o ID já retornado. O modelo continua decidindo as chamadas. Atualizar a página perde o texto da conversa, preservando a chave da intenção; não repita uma compra incerta com outra chave sem conferir os registros.
 
 Componentes e responsabilidades:
 

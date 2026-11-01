@@ -18,6 +18,7 @@ export const toolErrorLabels: Record<string, string> = {
   budget_exceeded: 'O orçamento foi excedido; nenhuma gravação foi realizada.',
   purchase_constraints_violated: 'Os itens não atendem às condições da compra; nenhuma gravação foi realizada.',
   purchase_constraints_unclear: 'As condições de compra precisam ser esclarecidas.',
+  purchase_not_authorized: 'A criação não foi autorizada; nenhuma gravação foi realizada.',
   tool_timeout: 'O tempo limite terminou; a execução não foi confirmada.',
   tool_cancelled: 'A chamada foi interrompida; a execução não foi confirmada.',
   tool_execution_failed: 'A ferramenta não confirmou um resultado válido.',

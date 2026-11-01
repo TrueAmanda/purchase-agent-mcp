@@ -30,7 +30,7 @@ def program(harness, purchase_args, sequence, final="Fixture purchase conclusion
                          for index, name in enumerate(sequence)] + [completion(final)]
 
 
-async def post(flow, message="Create the fixture purchase"):
+async def post(flow, message="Create the fixture purchase, exactly 6 items, product 1 and product 2"):
     return await flow.http.post("/requisicoes", json={"message": message, "include_tool_trace": True})
 
 
@@ -261,7 +261,7 @@ async def test_backend_must_confirm_storage_even_after_a_successful_real_mcp_wri
 async def test_nonexistent_product_cannot_leave_a_partial_request(flow, bridge, harness, purchase_args):
     purchase_args["request"]["items"][1]["product_id"] = 999999
     program(harness, purchase_args, ["criar_requisicao"])
-    response = await post(flow)
+    response = await post(flow, message="Create the fixture purchase, exactly 6 items, product 1 and product 999999")
     assert response.status_code == 422 and response.json()["detail"]["code"] == "product_not_found"
     assert_trace(response.json(), ["criar_requisicao"], ["error"])
     assert bridge.state.calls == ["/products/1", "/products/999999"]

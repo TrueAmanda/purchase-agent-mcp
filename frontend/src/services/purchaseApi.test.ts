@@ -50,6 +50,8 @@ describe('purchase API', () => {
     [502, 'api_http_error', 'O catálogo de produtos retornou um erro'],
     [503, 'mcp_unavailable', 'O serviço de ferramentas está indisponível'],
     [503, 'llm_unavailable', 'O assistente está indisponível'],
+    [503, 'llm_budget_exceeded', 'O limite de gastos da chave ou do workspace na OpenRouter foi atingido'],
+    [503, 'llm_forbidden', 'A OpenRouter bloqueou esta solicitação por permissões ou políticas'],
     [502, 'creation_unconfirmed', 'Não foi possível confirmar a gravação'],
     [409, 'idempotency_conflict', 'Este pedido entrou em conflito'],
   ])('maps HTTP %s/%s to safe Portuguese messages', async (status, code, text) => {

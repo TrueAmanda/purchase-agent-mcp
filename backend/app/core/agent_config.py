@@ -21,6 +21,7 @@ class AgentSettings(BaseModel):
     max_tool_calls_per_iteration: int = Field(default=8, gt=0, le=32)
     tool_timeout_seconds: float = Field(default=15, gt=0, le=300)
     run_timeout_seconds: float = Field(default=120, gt=0, le=1800)
+    max_concurrent_runs: int = Field(default=4, ge=1, le=32)
 
     @field_validator("api_key")
     @classmethod
@@ -53,6 +54,7 @@ class AgentSettings(BaseModel):
             "max_tool_calls_per_iteration": "AGENT_MAX_TOOL_CALLS_PER_ITERATION",
             "tool_timeout_seconds": "AGENT_TOOL_TIMEOUT_SECONDS",
             "run_timeout_seconds": "AGENT_RUN_TIMEOUT_SECONDS",
+            "max_concurrent_runs": "AGENT_MAX_CONCURRENT_RUNS",
         }
         try:
             return cls(**{field: os.environ[name] for field, name in fields.items() if name in os.environ})

@@ -75,4 +75,7 @@ class AgentResult(BaseModel):
     # Internal evidence keeps the existing CLI serialization contract unchanged.
     tool_events: list[ToolExecutionEvent] = Field(default_factory=list, exclude=True, repr=False)
     conversation_messages: list[dict[str, Any]] = Field(default_factory=list, exclude=True, repr=False)
+    user_message: str = Field(default="", exclude=True, repr=False)
+    catalog_products: list[dict[str, Any]] = Field(default_factory=list, exclude=True, repr=False)
+    purchase_limits: dict[str, Any] = Field(default_factory=dict, exclude=True, repr=False)
 
