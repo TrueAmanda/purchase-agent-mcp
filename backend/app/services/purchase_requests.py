@@ -14,7 +14,7 @@ from purchase_storage import PurchaseRequest
 from app.schemas.agent import AgentResult, ToolExecutionEvent
 from app.schemas.purchase_requests import (
     ConfirmedPurchaseRequest, PurchaseMessageResponse, PurchaseRequestListResponse,
-    PurchaseRequestRead, ToolTraceEntry,
+    PurchaseRequestRead,
 )
 from app.services.tool_trace import build_tool_trace, error_code as _error_code, event_failed as _event_failed
 
@@ -119,10 +119,6 @@ class PurchaseRequestService:
             self._raise_read_error(error)
 
     @staticmethod
-    def _trace(events: list[ToolExecutionEvent]) -> list[ToolTraceEntry]:
-        return build_tool_trace(events)
-
-    @staticmethod
     def _only_empty_searches(events: list[ToolExecutionEvent]) -> bool:
         searches = [event.result for event in events if event.name == "buscar_produtos" and event.outcome == "ok"]
         return bool(searches) and all(
@@ -162,7 +158,7 @@ class PurchaseRequestService:
             purchases = await run_in_threadpool(self._confirm, receipts)
             return PurchaseMessageResponse(
                 status="created", message=result.content, requisitions=purchases,
-                tool_trace=self._trace(events) if include_trace else None,
+                tool_trace=build_tool_trace(events) if include_trace else None,
             ), 200 if all(purchase.replayed for purchase in purchases) else 201
         if failed_events:
             for event in sorted(failed_events, key=lambda entry: not entry.invoked):
@@ -178,5 +174,5 @@ class PurchaseRequestService:
             )
         return PurchaseMessageResponse(
             status="no_results" if self._only_empty_searches(events) else "response",
-            message=result.content, tool_trace=self._trace(events) if include_trace else None,
+            message=result.content, tool_trace=build_tool_trace(events) if include_trace else None,
         ), 200
