@@ -1,9 +1,9 @@
 """Validated product data and structured MCP search results."""
 
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, StringConstraints, model_validator
 
 
 class Product(BaseModel):
@@ -62,6 +62,14 @@ class ProductSearchResult(BaseModel):
     total: int
     skip: int
     limit: int
+    match_type: Literal["text", "category"] = "text"
+    category: str | None = None
+
+
+class ProductCategoryList(RootModel):
+    root: list[Annotated[str, StringConstraints(
+        strict=True, min_length=1, max_length=80, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$",
+    )]] = Field(max_length=256)
 
 
 class ProductDetailResult(BaseModel):

@@ -47,6 +47,74 @@ async def test_no_results_is_successful_and_has_no_invented_products(product_cli
     assert result.total == 0
 
 
+@pytest.mark.parametrize("term", ["skin care", "skin-care", "  Skin Care  ", "skin_care"])
+async def test_empty_text_search_resolves_only_upstream_category_labels(product_client, catalog, term):
+    catalog.search = {"products": [], "total": 0, "skip": 0, "limit": 0}
+    catalog.categories = ["skin-care", "beauty"]
+    product = dict(catalog.products[1], category="skin-care")
+    catalog.category_results["skin-care"] = {"products": [product], "total": 1, "skip": 0, "limit": 1}
+    result = await product_client.search_products(term)
+    assert result.status == "success" and result.query == term.strip()
+    assert result.match_type == "category" and result.category == "skin-care"
+    assert result.products[0].id == product["id"] and result.products[0].price == Decimal("19.99")
+    assert [request.url.path for request in catalog.calls] == [
+        "/products/search", "/products/category-list", "/products/category/skin-care",
+    ]
+    assert dict(catalog.calls[0].url.params) == {"q": term.strip()}
+
+
+async def test_unknown_terms_do_not_create_categories_or_products(product_client, catalog):
+    catalog.search = {"products": [], "total": 0, "skip": 0, "limit": 0}
+    catalog.categories = ["skin-care"]
+    result = await product_client.search_products("fictional category")
+    assert result.status == "no_results" and result.products == []
+    assert result.match_type == "text" and result.category is None
+    assert [request.url.path for request in catalog.calls] == ["/products/search", "/products/category-list"]
+
+
+async def test_empty_confirmed_category_preserves_its_scope(product_client, catalog):
+    catalog.search = {"products": [], "total": 0, "skip": 0, "limit": 0}
+    catalog.categories = ["skin-care"]
+    catalog.category_results["skin-care"] = catalog.search.copy()
+    result = await product_client.search_products("skin care")
+    assert result.status == "no_results" and result.products == []
+    assert result.match_type == "category" and result.category == "skin-care"
+
+
+@pytest.mark.parametrize("path", ["/products/category-list", "/products/category/skin-care"])
+@pytest.mark.parametrize("failure,code", [
+    (httpx.ReadTimeout("private upstream detail"), "api_timeout"),
+    (httpx.Response(503, text="private upstream detail"), "api_http_error"),
+    (httpx.Response(200, json={"invalid": True}), "invalid_response"),
+])
+async def test_category_lookup_failures_are_errors_not_empty_results(product_client, catalog, path, failure, code):
+    catalog.search = {"products": [], "total": 0, "skip": 0, "limit": 0}
+    catalog.categories = ["skin-care"]
+    catalog.overrides[path] = failure
+    with pytest.raises(ProductAPIError) as caught:
+        await product_client.search_products("skin care")
+    assert caught.value.code == code and "private" not in str(caught.value)
+
+
+@pytest.mark.parametrize("categories", [["../private"], ["https://example.test"], ["skin-care?token=private"]])
+async def test_upstream_category_slugs_cannot_redirect_requests(product_client, catalog, categories):
+    catalog.search = {"products": [], "total": 0, "skip": 0, "limit": 0}
+    catalog.categories = categories
+    with pytest.raises(ProductAPIError) as caught:
+        await product_client.search_products("skin care")
+    assert caught.value.code == "invalid_response"
+    assert [request.url.path for request in catalog.calls] == ["/products/search", "/products/category-list"]
+
+
+async def test_category_response_cannot_substitute_unrelated_products(product_client, catalog):
+    catalog.search = {"products": [], "total": 0, "skip": 0, "limit": 0}
+    catalog.categories = ["skin-care"]
+    catalog.category_results["skin-care"] = {"products": [catalog.products[1]], "total": 1, "skip": 0, "limit": 1}
+    with pytest.raises(ProductAPIError) as caught:
+        await product_client.search_products("skin care")
+    assert caught.value.code == "invalid_response"
+
+
 @pytest.mark.parametrize("term", ["", " ", "\t\n", "\u00a0"])
 async def test_empty_terms_are_rejected_before_http(product_client, catalog, term):
     with pytest.raises(ProductAPIError) as error:

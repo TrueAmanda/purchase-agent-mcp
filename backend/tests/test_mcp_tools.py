@@ -54,6 +54,8 @@ async def bridge(tmp_path, monkeypatch):
         if request.url.path == "/products/search":
             items = [] if state.empty else list(products.values())
             return httpx.Response(200, json={"products": items, "total": len(items), "skip": 0, "limit": 30})
+        if request.url.path == "/products/category-list":
+            return httpx.Response(200, json=[])
         product = products.get(int(request.url.path.rsplit("/", 1)[1]))
         return httpx.Response(200, json=product) if product else httpx.Response(404)
 

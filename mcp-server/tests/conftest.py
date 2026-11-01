@@ -76,6 +76,8 @@ class MockCatalog:
         second = {"id": 2, "title": "Fixture product two", "description": "Fixture description two.", "price": 0.1}
         self.products = {1: deepcopy(product), 2: second}
         self.search = {"products": deepcopy(list(self.products.values())), "total": 2, "skip": 0, "limit": 2}
+        self.categories = []
+        self.category_results = {}
         self.overrides = {}
         self.calls = []
 
@@ -90,6 +92,10 @@ class MockCatalog:
             return override
         if request.url.path == "/products/search":
             return httpx.Response(200, json=deepcopy(self.search))
+        if request.url.path == "/products/category-list":
+            return httpx.Response(200, json=deepcopy(self.categories))
+        if request.url.path.startswith("/products/category/"):
+            return httpx.Response(200, json=deepcopy(self.category_results[request.url.path.rsplit("/", 1)[1]]))
         product_id = int(request.url.path.rsplit("/", 1)[1])
         if product_id not in self.products:
             return httpx.Response(404, json={"message": "Fixture product not found"})

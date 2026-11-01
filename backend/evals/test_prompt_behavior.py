@@ -237,3 +237,22 @@ async def test_creation_authorization_still_requires_intent_constraints_and_esse
         assert any(word in normalized for word in ("orcamento", "limite", "excede", "ultrapassa", "insuficiente")), content
     elif restriction == "missing_requester":
         assert "?" in content and any(word in normalized for word in ("nome", "solicitante")), content
+
+
+@pytest.mark.parametrize("first_query", [False, True], ids=["natural_request", "empty_category_label"])
+async def test_broad_category_search_uses_product_types_without_claiming_catalog_absence(evaluate, first_query):
+    message = "Preciso de produtos para cuidados com a pele. Quais opções existem no catálogo?"
+    if first_query:
+        message += " Comece pesquisando pelo termo exato 'skin care'."
+    content, sandbox = await evaluate(message, "skin_care")
+    searches = [arguments["termo"].lower() for name, arguments in sandbox.calls if name == "buscar_produtos"]
+    assert searches and any(sandbox.search_matches), (content, sandbox.calls)
+    assert any(product["category"] == "skin-care" for results in sandbox.search_matches for product in results)
+    assert all(name != "criar_requisicao" for name, _ in sandbox.calls), (content, sandbox.calls)
+    if first_query:
+        assert searches[0] == "skin care"
+        assert sandbox.catalog_calls[:3] == ["/products/search", "/products/category-list", "/products/category/skin-care"]
+        assert {product["id"] for product in sandbox.search_matches[0]} == {118, 119, 120}
+    normalized = normalize(content)
+    assert re.search(r"soap|sabonete|lotion|locao|wash|corporal", normalized), content
+    assert not re.search(r"nao (?:ha|existem).{0,60}produtos.{0,40}(?:catalogo|categoria)", normalized), content

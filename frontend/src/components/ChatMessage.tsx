@@ -15,7 +15,7 @@ export function ChatMessage({ entry, onViewRecords }: { entry: ChatEntry; onView
         {entry.error.uncertain && <p className="uncertainty-note">Se você pediu uma criação, ela pode ter sido registrada. Confira os registros antes de reenviar.</p>}
         <button className="text-button" type="button" onClick={onViewRecords}>Consultar registros <Icon name="chevron" size={14} /></button>
       </div> : <>
-        {entry.response?.status === 'no_results' && <div className="empty-result-label"><Icon name="search" size={15} /> Nenhum produto encontrado</div>}
+        {entry.response?.status === 'no_results' && <div className="empty-result-label"><Icon name="search" size={15} /> Nenhum resultado nas buscas realizadas</div>}
         {user ? <p className="message-text">{entry.content}</p> : <MessageContent text={entry.content} />}
         {entry.response?.status === 'created' && entry.response.requisitions.map((requisition) => <RequisitionCard key={requisition.id} requisition={requisition} />)}
       </>}

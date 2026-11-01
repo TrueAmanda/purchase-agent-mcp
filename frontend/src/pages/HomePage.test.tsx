@@ -62,7 +62,7 @@ describe('purchase chat', () => {
   it('handles an empty search without a purchase card or an API failure', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ status: 'no_results', message: 'Não encontrei esse produto.', requisitions: [] }));
     render(<App />); send('Busque um produto inexistente');
-    expect(await screen.findByText('Nenhum produto encontrado')).toBeTruthy();
+    expect(await screen.findByText('Nenhum resultado nas buscas realizadas')).toBeTruthy();
     expect(screen.getByText('Não encontrei esse produto.')).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByText('Registro confirmado')).toBeNull();

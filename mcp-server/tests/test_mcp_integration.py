@@ -152,6 +152,22 @@ async def test_no_results_is_not_an_mcp_error(mcp_connection, catalog):
     assert result.structuredContent["products"] == []
 
 
+async def test_category_search_over_mcp_returns_only_external_products(mcp_connection, catalog, db_counts):
+    catalog.search = {"products": [], "total": 0, "skip": 0, "limit": 0}
+    catalog.categories = ["skin-care"]
+    product = dict(catalog.products[1], category="skin-care")
+    catalog.category_results["skin-care"] = {"products": [product], "total": 1, "skip": 0, "limit": 1}
+    async with mcp_connection() as session:
+        tools = {tool.name: tool for tool in (await session.list_tools()).tools}
+        result = await session.call_tool("buscar_produtos", {"termo": "skin care"})
+    assert not result.isError
+    data = result.structuredContent
+    validate(data, tools["buscar_produtos"].outputSchema)
+    assert data["match_type"] == "category" and data["category"] == "skin-care"
+    assert [(item["id"], item["price"]) for item in data["products"]] == [(1, "19.99")]
+    assert db_counts() == (0, 0)
+
+
 async def test_creation_can_be_called_directly_then_retried_and_conflicted(
     mcp_connection, request_payload, db_counts, catalog
 ):

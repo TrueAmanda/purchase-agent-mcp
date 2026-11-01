@@ -1,6 +1,7 @@
 """HTTPX access to DummyJSON, independent of the MCP tool definition."""
 
 import logging
+import re
 import time
 from decimal import Decimal
 from typing import TypeVar
@@ -8,7 +9,7 @@ from typing import TypeVar
 import httpx
 from pydantic import BaseModel
 
-from purchase_mcp.schemas.products import Product, ProductDetailResult, ProductSearchPayload, ProductSearchResult
+from purchase_mcp.schemas.products import Product, ProductCategoryList, ProductDetailResult, ProductSearchPayload, ProductSearchResult
 
 logger = logging.getLogger(__name__)
 PayloadModel = TypeVar("PayloadModel", bound=BaseModel)
@@ -46,6 +47,18 @@ class ProductClient:
         payload = await self._get_model(
             "/products/search", ProductSearchPayload, params={"q": term}
         )
+        category = None
+        if not payload.products:
+            # Resolve labels only against upstream slugs, never an invented category/product map.
+            categories = await self._get_model("/products/category-list", ProductCategoryList)
+            normalized = self._normalize_category(term)
+            matches = [slug for slug in categories.root if self._normalize_category(slug) == normalized]
+            if len(matches) == 1:
+                category = matches[0]
+                payload = await self._get_model(f"/products/category/{category}", ProductSearchPayload)
+                if any(product.category != category for product in payload.products):
+                    logger.warning("Product search failed: code=invalid_response")
+                    raise ProductAPIError("invalid_response", "Product API returned a different product category.")
         status = "success" if payload.products else "no_results"
         logger.info(
             "Product search completed: status=%s count=%s total=%s duration_ms=%s",
@@ -55,7 +68,12 @@ class ProductClient:
         return ProductSearchResult(
             status=status, query=term, products=payload.products,
             total=payload.total, skip=payload.skip, limit=payload.limit,
+            match_type="category" if category else "text", category=category,
         )
+
+    @staticmethod
+    def _normalize_category(value: str) -> str:
+        return re.sub(r"[\s_-]+", "", value.casefold())
 
     async def get_product(self, product_id: int) -> ProductDetailResult:
         # bool is a subclass of int, but it is not a valid product identifier.

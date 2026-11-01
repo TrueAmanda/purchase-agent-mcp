@@ -13,7 +13,13 @@ from purchase_mcp.services.product_client import ProductAPIError, ProductClient
 def register_product_tools(server: FastMCP) -> None:
     @server.tool()
     async def buscar_produtos(termo: str, ctx: Context) -> ProductSearchResult:
-        """Search DummyJSON products by a nonempty term; prices have no assumed currency."""
+        """Search DummyJSON using nonempty English product keywords or category labels.
+
+        If text search is empty and the term matches an official category
+        (e.g. 'skin care' or 'skin-care'), query that category. match_type and
+        category identify the returned scope. Other empty text queries do not
+        establish category absence. Amounts are denominated in USD.
+        """
         client: ProductClient = ctx.request_context.lifespan_context["product_client"]
         try:
             return await client.search_products(termo)
