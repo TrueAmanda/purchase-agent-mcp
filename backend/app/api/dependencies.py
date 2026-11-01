@@ -9,11 +9,13 @@ from app.api.errors import http_error
 from app.core.agent_config import AgentSettings
 from app.core.agent_errors import AgentError
 from app.core.mcp_config import MCPSettings
+from app.core.conversation_config import ConversationSettings
 from app.schemas.purchase_requests import PurchaseMessageInput
 from app.services.agent import AgentService
 from app.services.openrouter import OpenRouterClient
 from app.services.mcp_tools import MCPToolProvider
 from app.services.purchase_requests import PurchaseRequestService
+from app.services.conversation_store import ConversationStore
 
 
 async def get_agent(payload: PurchaseMessageInput) -> AsyncIterator[AgentService]:
@@ -29,3 +31,12 @@ async def get_agent(payload: PurchaseMessageInput) -> AsyncIterator[AgentService
 
 def get_purchase_service(request: Request) -> PurchaseRequestService:
     return PurchaseRequestService(request.app.state.session_factory)
+
+
+async def get_conversation_store(request: Request) -> ConversationStore:
+    if not hasattr(request.app.state, "conversations"):
+        try:
+            request.app.state.conversations = ConversationStore(ConversationSettings.from_environment())
+        except AgentError as error:
+            raise http_error(error) from None
+    return request.app.state.conversations

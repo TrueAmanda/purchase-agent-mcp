@@ -53,9 +53,19 @@ class ToolExecutionEvent(BaseModel):
     outcome: Literal[
         "ok", "unknown_tool", "invalid_tool_arguments", "tool_timeout", "tool_execution_failed",
         "mcp_unavailable", "invalid_tool_result",
+        "tool_cancelled",
     ]
-    duration_ms: float = Field(default=0, ge=0)
+    invoked: bool = True
+    duration_ms: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     result: dict[str, Any] | None = Field(default=None, exclude=True, repr=False)
+
+
+class ToolExecutionResult(dict[str, Any]):
+    """JSON-compatible result with private adapter evidence, never a JSON field."""
+
+    def __init__(self, data: dict[str, Any], *, invoked: bool):
+        super().__init__(data)
+        self.invoked = invoked
 
 
 class AgentResult(BaseModel):
@@ -64,4 +74,5 @@ class AgentResult(BaseModel):
     tool_calls: int
     # Internal evidence keeps the existing CLI serialization contract unchanged.
     tool_events: list[ToolExecutionEvent] = Field(default_factory=list, exclude=True, repr=False)
+    conversation_messages: list[dict[str, Any]] = Field(default_factory=list, exclude=True, repr=False)
 

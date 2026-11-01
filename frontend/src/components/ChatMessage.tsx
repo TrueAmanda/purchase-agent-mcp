@@ -1,6 +1,8 @@
 import type { ChatEntry } from '../types/purchases';
 import { Icon } from './Icon';
 import { RequisitionCard } from './RequisitionCard';
+import { ToolHistory } from './ToolHistory';
+import { MessageContent } from './MessageContent';
 
 export function ChatMessage({ entry, onViewRecords }: { entry: ChatEntry; onViewRecords: () => void }) {
   const user = entry.role === 'user';
@@ -14,9 +16,10 @@ export function ChatMessage({ entry, onViewRecords }: { entry: ChatEntry; onView
         <button className="text-button" type="button" onClick={onViewRecords}>Consultar registros <Icon name="chevron" size={14} /></button>
       </div> : <>
         {entry.response?.status === 'no_results' && <div className="empty-result-label"><Icon name="search" size={15} /> Nenhum produto encontrado</div>}
-        <p className="message-text">{entry.content}</p>
+        {user ? <p className="message-text">{entry.content}</p> : <MessageContent text={entry.content} />}
         {entry.response?.status === 'created' && entry.response.requisitions.map((requisition) => <RequisitionCard key={requisition.id} requisition={requisition} />)}
       </>}
+      {!user && <ToolHistory events={entry.toolTrace ?? null} />}
     </div>
   </article>;
 }

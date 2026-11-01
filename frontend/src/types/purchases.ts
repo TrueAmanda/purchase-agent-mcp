@@ -31,6 +31,18 @@ export interface PurchaseResponse {
   status: 'created' | 'no_results' | 'response';
   message: string;
   requisitions: ConfirmedRequisition[];
+  tool_trace?: ToolTraceEntry[] | null;
+  conversation_id?: string | null;
+}
+
+export type ToolName = 'buscar_produtos' | 'detalhar_produto' | 'criar_requisicao';
+export interface ToolTraceEntry {
+  order: number;
+  name: ToolName;
+  status: 'success' | 'error' | 'timeout';
+  duration_ms: number | null;
+  code: string | null;
+  result: { product_count?: number; item_count?: number; replayed?: boolean } | null;
 }
 
 export interface PurchaseListResponse {
@@ -45,5 +57,6 @@ export interface ChatEntry {
   role: 'user' | 'assistant';
   content: string;
   response?: PurchaseResponse;
+  toolTrace?: ToolTraceEntry[] | null;
   error?: { message: string; uncertain: boolean };
 }

@@ -247,6 +247,7 @@ async def test_mcp_call_timeout_and_invalid_result_are_not_success(bridge, monke
     with pytest.raises(ToolExecutionError) as caught:
         await bridge.provider.call_tool("detalhar_produto", {"id": 1})
     assert caught.value.code == "tool_timeout"
+    assert caught.value.invoked is False
 
 
 @pytest.mark.parametrize("value", ["file:///tmp/mcp", "http://user:secret@localhost/mcp", "http://localhost/mcp?key=secret"])
@@ -271,10 +272,12 @@ async def test_cancellation_closes_session_and_does_not_retry(bridge, monkeypatc
         finally:
             closed.append(True)
     monkeypatch.setattr(bridge.provider, "_session", session)
-    with pytest.raises(TimeoutError):
+    with pytest.raises(TimeoutError) as caught:
         async with asyncio.timeout(0.01):
             await bridge.provider.call_tool("detalhar_produto", {"id": 1})
     assert closed == [True] and calls == [1]
+    cancellation = caught.value.__cause__ or caught.value.__context__
+    assert getattr(cancellation, "tool_invoked", None) is True
 
 
 async def test_conflicting_retry_rejected_without_extra_rows(bridge, purchase_args):
@@ -314,6 +317,7 @@ async def test_mcp_disconnect_during_call_is_not_empty_search(bridge, monkeypatc
     with pytest.raises(ToolExecutionError) as caught:
         await bridge.provider.call_tool("buscar_produtos", {"termo": "laptop"})
     assert caught.value.code == "mcp_unavailable" and counts(bridge) == (0, 0)
+    assert caught.value.invoked is False
 
 
 async def test_timeout_keeps_original_write_key_without_automatic_retry(bridge, purchase_args, monkeypatch):
@@ -336,3 +340,81 @@ async def test_timeout_keeps_original_write_key_without_automatic_retry(bridge, 
     monkeypatch.setattr(bridge.provider, "_session", original)
     confirmed = await bridge.provider.call_tool("criar_requisicao", purchase_args)
     assert confirmed["replayed"] is False and counts(bridge) == (1, 2)
+
+
+async def test_adapter_validation_never_claims_a_wire_invocation(bridge, purchase_args):
+    await bridge.provider.list_tools()
+    purchase_args["request"]["idempotency_key"] = "invalid-uuid"
+    with pytest.raises(ToolExecutionError) as caught:
+        await bridge.provider.call_tool("criar_requisicao", purchase_args)
+    assert caught.value.invoked is False and counts(bridge) == (0, 0)
+
+
+async def test_local_retry_guard_is_excluded_from_public_trace(bridge, harness, llm_http, purchase_args):
+    changed = deepcopy(purchase_args)
+    changed["request"]["idempotency_key"] = "22222222-2222-4222-8222-222222222222"
+    harness.responses = [
+        completion(None, [tool_call("criar_requisicao", purchase_args, "first")]),
+        completion(None, [tool_call("criar_requisicao", changed, "blocked")]),
+        completion("The original registration exists; the local retry was blocked."),
+    ]
+    agent = AgentService(OpenRouterClient(harness.settings, llm_http), harness.settings, bridge.provider)
+    response, status = await PurchaseRequestService(bridge.sessions).submit("Create fixture purchase", agent, True)
+    assert status == 201 and counts(bridge) == (1, 2)
+    assert len(response.tool_trace) == 1 and response.tool_trace[0].order == 1
+    assert response.tool_trace[0].name == "criar_requisicao"
+
+
+@pytest.mark.parametrize("overall_timeout", [False, True])
+async def test_timeout_before_mcp_invocation_is_not_reported_as_a_tool_call(
+    bridge, harness, llm_http, monkeypatch, overall_timeout,
+):
+    from app.services.tool_trace import build_tool_trace
+
+    definitions = await bridge.provider.list_tools()
+    monkeypatch.setattr(bridge.provider, "list_tools", AsyncMock(return_value=definitions))
+    @asynccontextmanager
+    async def slow_connection():
+        await asyncio.sleep(10)
+        yield
+    monkeypatch.setattr(bridge.provider, "_session", slow_connection)
+    settings = harness.settings.model_copy(update={
+        "run_timeout_seconds": 0.1 if overall_timeout else 2,
+        "tool_timeout_seconds": 2 if overall_timeout else 0.1,
+    })
+    harness.responses = [completion(None, [tool_call("detalhar_produto", {"id": 1})]), completion("Unavailable")]
+    agent = AgentService(OpenRouterClient(settings, llm_http), settings, bridge.provider)
+    if overall_timeout:
+        with pytest.raises(AgentError) as caught:
+            await agent.run("Details")
+        assert caught.value.code == "agent_timeout"
+        events = caught.value.tool_events
+    else:
+        events = (await agent.run("Details")).tool_events
+    assert len(events) == 1 and events[0].invoked is False
+    assert build_tool_trace(events) == []
+    assert counts(bridge) == (0, 0) and bridge.state.calls == []
+
+
+async def test_conversation_follow_up_uses_original_mcp_product_evidence(bridge, harness, llm_http):
+    app = FastAPI()
+    app.include_router(api_router)
+    app.state.session_factory = bridge.sessions
+    def make_agent():
+        provider = MCPToolProvider(bridge.provider.settings, bridge.provider.http_client)
+        return AgentService(OpenRouterClient(harness.settings, llm_http), harness.settings, provider)
+    app.dependency_overrides[get_agent] = make_agent
+    harness.responses = [completion(None, [tool_call("buscar_produtos", {"termo": "keyboard"}, "search")]),
+                         completion("Encontrei um teclado para avaliar.")]
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
+        first = await http.post("/requisicoes", json={"message": "Procure opções", "conversation_id": None})
+        identifier = first.json()["conversation_id"]
+        harness.responses = [completion(None, [tool_call("detalhar_produto", {"id": 2}, "detail")]), completion("Detalhes do teclado.")]
+        second = await http.post("/requisicoes", json={"message": "Mais detalhes do teclado", "conversation_id": identifier, "include_tool_trace": True})
+    assert first.status_code == second.status_code == 200
+    assert second.json()["conversation_id"] == identifier
+    assert [entry["name"] for entry in second.json()["tool_trace"]] == ["detalhar_produto"]
+    previous_data = json.loads(next(entry["content"] for entry in harness.requests[2]["messages"] if entry["role"] == "tool"))
+    assert previous_data["products"][1]["id"] == 2
+    assert previous_data["products"][1]["price"] == "0.1"
+    assert bridge.state.calls == ["/products/search", "/products/2"] and counts(bridge) == (0, 0)

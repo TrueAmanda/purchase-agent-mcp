@@ -1,18 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { listPurchases, PurchaseApiError, submitPurchase } from './purchaseApi';
-import { answer, created, jsonResponse, requisition } from '../test/fixtures';
+import { answer, created, jsonResponse, requisition, trace, conversationId } from '../test/fixtures';
 
 const fetchMock = vi.fn<typeof fetch>();
 beforeEach(() => { fetchMock.mockReset(); vi.stubGlobal('fetch', fetchMock); });
 
 describe('purchase API', () => {
-  it('posts the actual contract, without requesting tool traces', async () => {
+  it('posts the actual contract and requests structured execution evidence', async () => {
     fetchMock.mockResolvedValue(jsonResponse(answer));
     expect(await submitPurchase('  Preciso comprar equipamentos  ')).toEqual(answer);
     const [url, options] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/requisicoes');
     expect(options?.method).toBe('POST');
-    expect(JSON.parse(options?.body as string)).toEqual({ message: 'Preciso comprar equipamentos', include_tool_trace: false });
+    expect(JSON.parse(options?.body as string)).toEqual({ message: 'Preciso comprar equipamentos', include_tool_trace: true, conversation_id: null });
     expect(options?.signal).toBeInstanceOf(AbortSignal);
     expect(options?.credentials).toBe('omit');
   });
@@ -95,5 +95,45 @@ describe('purchase API', () => {
     expect(fetchMock.mock.calls[0][1]?.method).toBe('GET');
     expect(result.requisitions[0].currency).toBeNull();
     expect(result.requisitions[0].total).toBeNull();
+  });
+
+  it('preserves executor history on non-2xx responses without exposing raw bodies', async () => {
+    const failed = { ...trace[0], status: 'error', code: 'api_unavailable', result: null };
+    fetchMock.mockResolvedValue(jsonResponse({ detail: { code: 'api_unavailable', message: 'private-body' },
+      tool_trace: [failed] }, 503));
+    try {
+      await submitPurchase('Teste');
+      throw new Error('Expected API failure');
+    } catch (error) {
+      expect(error).toBeInstanceOf(PurchaseApiError);
+      const failure = error as PurchaseApiError;
+      expect(failure.toolTrace).toEqual([failed]);
+      expect(failure.message).not.toContain('private');
+    }
+  });
+
+  it('keeps a confirmed purchase when optional history is malformed', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ...created, tool_trace: [{ name: 'invented' }] }, 201));
+    const result = await submitPurchase('Crie');
+    expect(result.status).toBe('created');
+    expect(result.requisitions[0].request_number).toBe(requisition.request_number);
+    expect(result.tool_trace).toBeNull();
+  });
+
+  it('sends an opaque identifier instead of client-authored conversation history', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(answer));
+    const result = await submitPurchase('Quero mais detalhes', conversationId);
+    expect(result.conversation_id).toBe(conversationId);
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    expect(body).toEqual({ message: 'Quero mais detalhes', include_tool_trace: true, conversation_id: conversationId });
+    expect(body).not.toHaveProperty('history');
+    expect(body).not.toHaveProperty('messages');
+  });
+
+  it('does not discard a confirmed purchase when conversation metadata is missing', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ...created, conversation_id: undefined }, 201));
+    const result = await submitPurchase('Crie');
+    expect(result.status).toBe('created');
+    expect(result.conversation_id).toBeNull();
   });
 });

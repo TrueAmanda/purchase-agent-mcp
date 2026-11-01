@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from copy import deepcopy
 from time import perf_counter
 from typing import Any
 
@@ -27,19 +28,32 @@ class AgentService:
         self.settings = settings
         self.tools = tools if tools is not None else EmptyToolProvider()
 
-    async def run(self, message: str) -> AgentResult:
+    async def run(self, message: str, *, history: list[dict[str, Any]] | None = None) -> AgentResult:
         if not isinstance(message, str) or not message.strip() or len(message) > 20000:
             raise AgentError("invalid_message")
         started = perf_counter()
         outcome = "ok"
+        events: list[ToolExecutionEvent] = []
+        prior = deepcopy(history or [])
+        messages: list[dict[str, Any]] = []
         try:
             async with asyncio.timeout(self.settings.run_timeout_seconds):
-                return await self._run(message.strip())
+                return await self._run(message.strip(), events, prior, messages)
         except TimeoutError:
             outcome = "agent_timeout"
-            raise AgentError(outcome) from None
+            if events and events[-1].outcome == "tool_cancelled":
+                events[-1].outcome = "tool_timeout"
+            error = AgentError(outcome)
+            error.tool_events = list(events)
+            error.conversation_messages = self._failure_context(message, messages, len(prior), outcome)
+            raise error from None
         except AgentError as error:
             outcome = error.code
+            error.tool_events = list(events)
+            error.conversation_messages = self._failure_context(message, messages, len(prior), error.code)
+            raise
+        except asyncio.CancelledError as error:
+            error.conversation_messages = self._failure_context(message, messages, len(prior), "execution_interrupted")
             raise
         finally:
             logger.info("agent_run outcome=%s duration_ms=%.1f", outcome, (perf_counter() - started) * 1000)
@@ -63,18 +77,40 @@ class AgentService:
         except Exception:
             raise AgentError("tool_catalog_error") from None
 
-    async def _run(self, message: str) -> AgentResult:
+    @staticmethod
+    def _failure_context(message: str, messages: list[dict], prior_count: int, code: str) -> list[dict]:
+        turn = deepcopy(messages[prior_count + 1:]) if messages else [{"role": "user", "content": message.strip()}]
+        pending = {}
+        for entry in turn:
+            if entry.get("role") == "assistant":
+                pending.update({call["id"]: call for call in entry.get("tool_calls", [])})
+            elif entry.get("role") == "tool":
+                pending.pop(entry["tool_call_id"], None)
+        # Protocol bookkeeping for interrupted batches, not evidence of tool execution.
+        for call_id in pending:
+            turn.append({"role": "tool", "tool_call_id": call_id, "content": json.dumps({"error": {
+                "code": "execution_unconfirmed", "message": "No result was confirmed. A write may have completed; reuse its original idempotency key.",
+            }})})
+        turn.append({"role": "assistant", "content": f"Execution ended with {code}. Prior tool results remain authoritative; do not recreate an already registered purchase."})
+        return turn
+
+    async def _run(
+        self, message: str, events: list[ToolExecutionEvent], history: list[dict], messages: list[dict],
+    ) -> AgentResult:
         definitions, validators = await self._load_tools()
         prompt = build_system_prompt(tools_available=bool(definitions))
-        messages = [{"role": "system", "content": prompt}, {"role": "user", "content": message}]
+        messages.extend([{"role": "system", "content": prompt}, *history, {"role": "user", "content": message}])
         executed = 0
-        events = []
         seen_call_ids = set()
         for iteration in range(1, self.settings.max_iterations + 1):
             reply = await self.llm.complete(messages, definitions)
             logger.info("agent_round iteration=%d requested_tools=%d", iteration, len(reply.tool_calls))
             if not reply.tool_calls:
-                return AgentResult(content=reply.content, iterations=iteration, tool_calls=executed, tool_events=events)
+                messages.append(reply.as_history_message())
+                return AgentResult(
+                    content=reply.content, iterations=iteration, tool_calls=executed, tool_events=events,
+                    conversation_messages=deepcopy(messages[len(history) + 1:]),
+                )
             if len(reply.tool_calls) > self.settings.max_tool_calls_per_iteration:
                 raise AgentError("tool_call_limit")
             if any(call.id in seen_call_ids for call in reply.tool_calls):
@@ -86,7 +122,7 @@ class AgentService:
             # Multiple calls are processed in model order, without a fixed business flow.
             for call in reply.tool_calls:
                 seen_call_ids.add(call.id)
-                result, event = await self._execute_tool(call, validators)
+                result, event = await self._execute_tool(call, validators, events)
                 events.append(event)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
                 executed += 1
@@ -94,9 +130,11 @@ class AgentService:
 
     async def _execute_tool(
         self, call: ToolCall, validators: dict[str, Draft202012Validator],
+        events: list[ToolExecutionEvent],
     ) -> tuple[str, ToolExecutionEvent]:
         started = perf_counter()
         outcome = "ok"
+        invoked = False
         result: dict[str, Any]
         if call.function.name not in validators:
             outcome = "unknown_tool"
@@ -111,16 +149,28 @@ class AgentService:
             if outcome == "ok":
                 try:
                     async with asyncio.timeout(self.settings.tool_timeout_seconds):
+                        invoked = True
                         result = await self.tools.call_tool(call.function.name, arguments)
+                    invoked = getattr(result, "invoked", True)
                     if not isinstance(result, dict):
                         raise ValueError
                     content = json.dumps(result, ensure_ascii=False, allow_nan=False)
                     if len(content) > 100000:
                         raise ValueError
-                except TimeoutError:
+                except TimeoutError as error:
+                    cancellation = error.__cause__ or error.__context__
+                    invoked = getattr(cancellation, "tool_invoked", invoked)
                     outcome = "tool_timeout"
                 except ToolExecutionError as error:
                     outcome = error.code
+                    invoked = error.invoked
+                except asyncio.CancelledError as error:
+                    events.append(ToolExecutionEvent(
+                        name=call.function.name, outcome="tool_cancelled",
+                        invoked=getattr(error, "tool_invoked", invoked),
+                        duration_ms=round((perf_counter() - started) * 1000, 1),
+                    ))
+                    raise
                 except Exception:
                     outcome = "tool_execution_failed"
         if outcome != "ok":
@@ -144,7 +194,7 @@ class AgentService:
                     "tool_error" if "error" in result and outcome == "ok" else outcome, result_count, duration_ms)
         event = ToolExecutionEvent(
             name=call.function.name if call.function.name in validators else "unknown_tool",
-            outcome=outcome, result=result if outcome == "ok" else None, duration_ms=duration_ms,
+            outcome=outcome, invoked=invoked, result=result if outcome == "ok" else None, duration_ms=duration_ms,
         )
         return content, event
 

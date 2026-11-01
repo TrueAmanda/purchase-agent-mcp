@@ -17,7 +17,7 @@ from referencing import Registry
 
 from app.core.agent_errors import AgentError, ToolExecutionError
 from app.core.mcp_config import MCPSettings
-from app.schemas.agent import ToolDefinition
+from app.schemas.agent import ToolDefinition, ToolExecutionResult
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +91,9 @@ class MCPToolProvider:
                         description = tool.description or tool.name
                         if tool.name == "criar_requisicao":
                             description += (
-                                " For this execution, use this valid UUID as idempotency_key for the first purchase "
-                                f"intent: {self._suggested_write_key}. Reuse it on retries; it is not a requisition number."
+                                " For a NEW purchase intent without a previous key in conversation history, "
+                                f"use this valid idempotency_key: {self._suggested_write_key}. "
+                                "For retries, reuse the original key from history instead. This is not a requisition number."
                             )
                         else:
                             description += (
@@ -119,27 +120,35 @@ class MCPToolProvider:
 
     async def call_tool(self, name: str, arguments: dict) -> dict:
         if name not in self._tools:
-            raise ToolExecutionError(code="unknown_tool")
+            raise ToolExecutionError(code="unknown_tool", invoked=False)
         inputs, outputs = self._tools[name]
         try:
             inputs.validate(arguments)
         except Exception:
-            raise ToolExecutionError(code="invalid_tool_arguments") from None
+            raise ToolExecutionError(code="invalid_tool_arguments", invoked=False) from None
         if name == "criar_requisicao":
             request = arguments["request"]
             intent = json.dumps({key: value for key, value in request.items() if key != "idempotency_key"},
                                 sort_keys=True, ensure_ascii=False)
             previous_key = self._write_keys.setdefault(intent, request["idempotency_key"])
             if previous_key != request["idempotency_key"]:
-                return {"error": {"code": "idempotency_conflict", "message":
-                    "Retry the same purchase data with the original idempotency key, never a new key."}}
+                return ToolExecutionResult({"error": {"code": "idempotency_conflict", "message":
+                    "Retry the same purchase data with the original idempotency key, never a new key."}}, invoked=False)
+        invoked = False
         try:
             async with self._session() as session:
+                invoked = True
                 result = await session.call_tool(name, arguments=arguments)
         except TimeoutError:
-            raise ToolExecutionError(code="tool_timeout") from None
+            raise ToolExecutionError(code="tool_timeout", invoked=invoked) from None
+        except asyncio.CancelledError as error:
+            # Preserve the original cancellation object so asyncio.timeout keeps working.
+            error.tool_invoked = invoked
+            raise
         except Exception as error:
-            raise ToolExecutionError(code="tool_timeout" if _timed_out(error) else "mcp_unavailable") from None
+            raise ToolExecutionError(
+                code="tool_timeout" if _timed_out(error) else "mcp_unavailable", invoked=invoked,
+            ) from None
         if result.isError:
             # MCP v1 ToolError is text. Extract only known codes, never forward bodies.
             error_text = " ".join(block.text for block in result.content if block.type == "text")

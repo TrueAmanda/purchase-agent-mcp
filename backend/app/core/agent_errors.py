@@ -17,19 +17,31 @@ MESSAGES = {
     "tool_catalog_error": "The tool catalog could not be loaded or is invalid.",
     "invalid_mcp_configuration": "Invalid MCP connection configuration.",
     "mcp_unavailable": "The MCP server is unavailable or returned an invalid tool catalog.",
+    "invalid_conversation_configuration": "Invalid conversation retention configuration.",
+    "conversation_expired": "This conversation expired or the service restarted. Start a new conversation with the full purchase details.",
+    "conversation_busy": "Another message in this conversation is still being processed. Wait for its response.",
+    "conversation_capacity": "The conversation service is busy. Try again later.",
 }
 
 
 class AgentError(Exception):
     def __init__(self, code: str):
         self.code = code
+        # Executor evidence is private; HTTP exposes only a sanitized projection.
+        self.tool_events = None
+        self.conversation_messages = []
+        self.conversation_id = None
         super().__init__(MESSAGES[code])
 
 
 class ToolExecutionError(Exception):
     """Adapters signal failure without forwarding external messages or payloads."""
 
-    def __init__(self, message: str = "Tool execution was not confirmed.", *, code: str = "tool_execution_failed"):
+    def __init__(
+        self, message: str = "Tool execution was not confirmed.", *,
+        code: str = "tool_execution_failed", invoked: bool = True,
+    ):
+        self.invoked = invoked
         self.code = code if code in {
             "unknown_tool", "invalid_tool_arguments", "tool_timeout", "mcp_unavailable", "invalid_tool_result",
         } else "tool_execution_failed"

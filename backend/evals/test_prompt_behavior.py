@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import unicodedata
+from uuid import UUID
 
 import httpx
 import pytest
@@ -74,14 +75,14 @@ async def test_unrelated_requests_do_not_produce_answers_or_tool_calls(evaluate,
 
 async def test_user_provided_ingredients_are_a_valid_shopping_request(evaluate):
     content, sandbox = await evaluate("Busque 1 embalagem de farinha de trigo da minha lista de compras. Não quero receita.")
-    assert any(name == "buscar_produtos" and "farinha" in arguments["termo"].lower() for name, arguments in sandbox.calls)
+    assert any(name == "buscar_produtos" and "flour" in arguments["termo"].lower() for name, arguments in sandbox.calls)
     assert all(name != "criar_requisicao" for name, _ in sandbox.calls)
     assert_no_recipe(content)
 
 
 async def test_mixed_request_handles_only_the_purchasing_part(evaluate):
     content, sandbox = await evaluate("Me dê uma receita de bolo de chocolate e busque um teclado para comprar. Não crie requisição.")
-    assert any(name == "buscar_produtos" and "teclad" in arguments["termo"].lower() for name, arguments in sandbox.calls), (content, sandbox.calls)
+    assert any(name == "buscar_produtos" and "keyboard" in arguments["termo"].lower() for name, arguments in sandbox.calls), (content, sandbox.calls)
     assert all(name != "criar_requisicao" for name, _ in sandbox.calls)
     assert_no_recipe(content)
 
@@ -182,3 +183,57 @@ async def test_supported_currency_allows_catalog_search(evaluate, currency):
     content, sandbox = await evaluate(f"Busque um teclado até {currency} 150, sem criar requisição.")
     assert any(name == "buscar_produtos" for name, _ in sandbox.calls), content
     assert all(name != "criar_requisicao" for name, _ in sandbox.calls)
+
+
+async def test_portuguese_search_uses_english_catalog_keywords(evaluate):
+    content, sandbox = await evaluate("Estou pesquisando maquiagem. Procure opções de máscara de cílios. Ainda não quero registrar uma compra.", "makeup")
+    searches = [args["termo"].lower() for name, args in sandbox.calls if name == "buscar_produtos"]
+    assert searches and any("mascara" in term for term in searches), (content, sandbox.calls)
+    assert all("cílios" not in term and "máscara" not in term for term in searches)
+    assert all(name != "criar_requisicao" for name, _ in sandbox.calls)
+
+
+@pytest.mark.parametrize("authorization", [
+    "Se atender às condições, crie a requisição.",
+    "Crie a requisição quando terminar essas verificações, sem pedir outra confirmação.",
+])
+async def test_existing_authorization_creates_without_redundant_confirmation(evaluate, authorization):
+    content, sandbox = await evaluate(
+        "Quero comprar 48 unidades de máscara de cílios, com orçamento total de US$ 500. "
+        "Procure no catálogo e consulte a ficha individual da opção escolhida para conferir "
+        "estoque, pedido mínimo e garantia. " + authorization
+        + " Solicitante Avaliador, título Maquiagem para equipe.",
+        "authorized_makeup",
+    )
+    names = [name for name, _ in sandbox.calls]
+    assert set(names) == {"buscar_produtos", "detalhar_produto", "criar_requisicao"}, (content, sandbox.calls)
+    writes = [arguments["request"] for name, arguments in sandbox.calls if name == "criar_requisicao"]
+    assert len(writes) == 1, (content, sandbox.calls)
+    request = writes[0]
+    UUID(request["idempotency_key"])
+    assert request["items"] == [{"product_id": 1, "quantity": 48}]
+    assert request["requester_name"] == "Avaliador" and request["title"] == "Maquiagem para equipe"
+    assert sandbox.request_number in content, content
+
+
+@pytest.mark.parametrize("restriction", ["research_only", "insufficient_budget", "missing_requester"])
+async def test_creation_authorization_still_requires_intent_constraints_and_essential_fields(evaluate, restriction):
+    budget = 450 if restriction == "insufficient_budget" else 500
+    message = (
+        f"Procure 48 unidades de máscara de cílios com orçamento total de US$ {budget}. "
+        "Consulte a ficha individual para conferir estoque, pedido mínimo e garantia. "
+        "Título Maquiagem para equipe. "
+    )
+    if restriction != "missing_requester":
+        message += "Meu nome é Avaliador. "
+    message += ("Quero apenas pesquisar e avaliar as opções." if restriction == "research_only"
+                else "Se atender às condições, crie a requisição.")
+    content, sandbox = await evaluate(message, "authorized_makeup")
+    assert any(name == "buscar_produtos" for name, _ in sandbox.calls), (content, sandbox.calls)
+    assert all(name != "criar_requisicao" for name, _ in sandbox.calls), (content, sandbox.calls)
+    assert sandbox.request_number not in content, content
+    normalized = normalize(content)
+    if restriction == "insufficient_budget":
+        assert any(word in normalized for word in ("orcamento", "limite", "excede", "ultrapassa", "insuficiente")), content
+    elif restriction == "missing_requester":
+        assert "?" in content and any(word in normalized for word in ("nome", "solicitante")), content

@@ -1,5 +1,7 @@
 """Purchase HTTP contracts with a simulated agent and isolated SQLAlchemy storage."""
 
+import asyncio
+import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -106,7 +108,7 @@ async def test_post_validates_and_forwards_message_without_writing(api_client, a
     assert response.status_code == 200
     assert api_context.agent.messages == ["Preciso de equipamentos"]
     assert response.json() == {
-        "status": "response", "message": "Quais equipamentos você precisa?", "requisitions": [], "tool_trace": None,
+        "status": "response", "message": "Quais equipamentos você precisa?", "requisitions": [], "tool_trace": None, "conversation_id": None,
     }
     with api_context.sessions() as session:
         assert session.scalar(select(func.count()).select_from(PurchaseRequest)) == 0
@@ -242,7 +244,7 @@ async def test_trace_is_opt_in_and_never_contains_arguments_or_results(api_clien
     set_events(api_context, ToolExecutionEvent(name="buscar_produtos", outcome="ok", result={"private": "private-sensitive-data"}))
     response = await api_client.post("/requisicoes", json={"message": "Busque", "include_tool_trace": True})
     assert response.json()["tool_trace"] == [{
-        "name": "buscar_produtos", "status": "success", "code": None, "duration_ms": 0.0, "result": None,
+        "order": 1, "name": "buscar_produtos", "status": "success", "code": None, "duration_ms": None, "result": None,
     }]
     assert "private-sensitive-data" not in response.text
     assert "arguments" not in response.text
@@ -358,7 +360,7 @@ async def test_executor_receipt_reaches_endpoint_without_llm_text_parsing(
     trace = response.json()["tool_trace"]
     assert len(trace) == 1 and trace[0]["duration_ms"] >= 0
     assert {key: value for key, value in trace[0].items() if key != "duration_ms"} == {
-        "name": "criar_requisicao", "status": "success", "code": None, "result": None,
+        "order": 1, "name": "criar_requisicao", "status": "success", "code": None, "result": None,
     }
     assert harness.tools.calls == [("criar_requisicao", {"request": {"items": [{"product_id": 1, "quantity": 3}]}})]
 
@@ -381,6 +383,112 @@ async def test_error_wrappers_cannot_confirm_an_existing_record(api_client, api_
     assert response.status_code == 502
 
 
+async def test_trace_preserves_actual_order_and_repeated_names(api_client, api_context):
+    set_events(api_context,
+        ToolExecutionEvent(name="detalhar_produto", outcome="ok", duration_ms=10, result={"product": {"id": 1}}),
+        ToolExecutionEvent(name="buscar_produtos", outcome="ok", duration_ms=20, result={"products": []}),
+        ToolExecutionEvent(name="detalhar_produto", outcome="ok", duration_ms=30, result={"product": {"id": 2}}),
+    )
+    response = await api_client.post("/requisicoes", json={"message": "Compare", "include_tool_trace": True})
+    trace = response.json()["tool_trace"]
+    assert response.status_code == 200
+    assert [entry["name"] for entry in trace] == ["detalhar_produto", "buscar_produtos", "detalhar_produto"]
+    assert [entry["order"] for entry in trace] == [1, 2, 3]
+    assert [entry["duration_ms"] for entry in trace] == [10, 20, 30]
+
+
+async def test_trace_does_not_infer_calls_from_assistant_claims(api_client, api_context):
+    set_events(api_context, message="I used buscar_produtos and criar_requisicao. This text is not evidence.")
+    response = await api_client.post("/requisicoes", json={"message": "Teste", "include_tool_trace": True})
+    assert response.json()["tool_trace"] == []
+    assert response.json()["requisitions"] == []
+
+
+async def test_trace_excludes_locally_blocked_calls_and_unapproved_names(api_client, api_context):
+    set_events(api_context,
+        ToolExecutionEvent(name="buscar_produtos", outcome="invalid_tool_arguments", invoked=False),
+        ToolExecutionEvent(name="private-tool-name", outcome="ok", result={}),
+        ToolExecutionEvent(name="detalhar_produto", outcome="ok", result={"product": {"id": 1}}),
+    )
+    response = await api_client.post("/requisicoes", json={"message": "Teste", "include_tool_trace": True})
+    assert response.status_code == 502
+    trace = response.json()["tool_trace"]
+    assert len(trace) == 1 and trace[0]["name"] == "detalhar_produto" and trace[0]["order"] == 1
+    assert "private-tool-name" not in response.text
+
+
+@pytest.mark.parametrize("code,status,trace_status", [
+    ("api_timeout", 504, "timeout"), ("api_unavailable", 503, "error"),
+    ("api_http_error", 502, "error"), ("product_not_found", 422, "error"),
+])
+async def test_failed_http_responses_include_safe_tool_evidence(api_client, api_context, code, status, trace_status):
+    set_events(api_context, ToolExecutionEvent(name="detalhar_produto", outcome="ok", duration_ms=3.5,
+        result={"error": {"code": code, "message": "private-upstream-secret"}, "arguments": "private-arguments"}))
+    response = await api_client.post("/requisicoes", json={"message": "Teste", "include_tool_trace": True})
+    assert response.status_code == status
+    assert response.json()["tool_trace"] == [{
+        "order": 1, "name": "detalhar_produto", "status": trace_status,
+        "duration_ms": 3.5, "code": code, "result": None,
+    }]
+    assert "private" not in response.text and "arguments" not in response.text
+
+
+async def test_error_trace_remains_opt_in_and_sanitizes_unknown_codes(api_client, api_context):
+    set_events(api_context, ToolExecutionEvent(name="buscar_produtos", outcome="ok",
+        result={"error": {"code": "private-error-code", "message": "private-body"}}))
+    response = await api_client.post("/requisicoes", json={"message": "Teste"})
+    assert "tool_trace" not in response.json()
+    response = await api_client.post("/requisicoes", json={"message": "Teste", "include_tool_trace": True})
+    assert response.json()["tool_trace"][0]["code"] == "tool_execution_failed"
+    assert "private" not in response.text
+
+
+async def test_completed_calls_survive_a_later_llm_error(api_client, api_context, harness, llm_http):
+    harness.responses = [
+        completion(None, [tool_call("buscar_produtos", {"termo": "laptop"}, "search")]),
+        completion(None, [tool_call("detalhar_produto", {"id": 1}, "details")]),
+        httpx.Response(503, text="private-provider-body"),
+    ]
+    api_context.app.dependency_overrides[get_agent] = lambda: harness.agent(llm_http)
+    response = await api_client.post("/requisicoes", json={"message": "Compare", "include_tool_trace": True})
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "llm_unavailable"
+    trace = response.json()["tool_trace"]
+    assert [entry["name"] for entry in trace] == ["buscar_produtos", "detalhar_produto"]
+    assert [entry["order"] for entry in trace] == [1, 2]
+    assert all(entry["status"] == "success" and entry["duration_ms"] >= 0 for entry in trace)
+    assert "private-provider" not in response.text
+
+
+async def test_overall_timeout_records_the_interrupted_tool(api_client, api_context, harness, llm_http):
+    cancelled = []
+    async def slow_tool(*args):
+        try:
+            await asyncio.sleep(10)
+        finally:
+            cancelled.append(True)
+    harness.tools.call_tool = slow_tool
+    harness.responses = [completion(None, [tool_call("detalhar_produto", {"id": 1})])]
+    api_context.app.dependency_overrides[get_agent] = lambda: harness.agent(llm_http, run_timeout_seconds=0.1)
+    response = await api_client.post("/requisicoes", json={"message": "Detalhe", "include_tool_trace": True})
+    assert response.status_code == 504 and cancelled == [True]
+    assert response.json()["detail"]["code"] == "agent_timeout"
+    trace = response.json()["tool_trace"]
+    assert len(trace) == 1 and trace[0]["status"] == "timeout" and trace[0]["order"] == 1
+    assert trace[0]["duration_ms"] > 0
+
+
+async def test_confirmation_read_failure_retains_creation_tool_trace(api_client, api_context, seed_purchase):
+    record = seed_purchase()
+    set_events(api_context, creation(record))
+    api_context.app.state.session_factory = MagicMock(side_effect=OperationalError("SELECT", {}, Exception("private")))
+    response = await api_client.post("/requisicoes", json={"message": "Crie", "include_tool_trace": True})
+    assert response.status_code == 503 and "requisitions" not in response.json()
+    assert response.json()["detail"]["code"] == "database_unavailable"
+    assert response.json()["tool_trace"][0]["name"] == "criar_requisicao"
+    assert response.json()["tool_trace"][0]["status"] == "success"
+
+
 async def test_empty_search_after_found_candidates_does_not_erase_them(api_client, api_context):
     set_events(api_context,
         ToolExecutionEvent(name="buscar_produtos", outcome="ok", result={"status": "success", "products": [{"id": 1}], "total": 1}),
@@ -388,3 +496,77 @@ async def test_empty_search_after_found_candidates_does_not_erase_them(api_clien
     )
     response = await api_client.post("/requisicoes", json={"message": "Compare opções"})
     assert response.json()["status"] == "response"
+
+
+async def test_chat_continues_with_server_owned_tool_results(api_client, api_context, harness, llm_http):
+    catalog = {"status": "success", "products": [{"id": 3, "name": "Fixture Powder Canister", "price": "14.99", "currency": "USD"}], "total": 1}
+    harness.tools.result = catalog
+    harness.responses = [completion(None, [tool_call("buscar_produtos", {"termo": "makeup"}, "search")]), completion("Encontrei um pó compacto.")]
+    api_context.app.dependency_overrides[get_agent] = lambda: harness.agent(llm_http)
+    first = await api_client.post("/requisicoes", json={"message": "Procure maquiagem", "conversation_id": None, "include_tool_trace": True})
+    assert first.status_code == 200
+    identifier = first.json()["conversation_id"]
+    assert identifier
+    harness.tools.result = {"product": catalog["products"][0]}
+    harness.responses = [completion(None, [tool_call("detalhar_produto", {"id": 3}, "detail")]), completion("Detalhes do pó compacto.")]
+    second = await api_client.post("/requisicoes", json={"message": "Mais detalhes do pó compacto", "conversation_id": identifier, "include_tool_trace": True})
+    assert second.status_code == 200 and second.json()["conversation_id"] == identifier
+    assert [entry["name"] for entry in second.json()["tool_trace"]] == ["detalhar_produto"]
+    previous_tool = next(entry for entry in harness.requests[2]["messages"] if entry["role"] == "tool")
+    assert json.loads(previous_tool["content"]) == catalog
+    # No private transcript or tool arguments are exposed as a new response field.
+    assert "conversation_messages" not in second.json() and "history" not in second.json()
+
+
+async def test_new_chat_and_legacy_requests_do_not_inherit_other_context(api_client, api_context, harness, llm_http):
+    harness.responses = [completion("First answer"), completion("New conversation"), completion("Independent request")]
+    api_context.app.dependency_overrides[get_agent] = lambda: harness.agent(llm_http)
+    first = await api_client.post("/requisicoes", json={"message": "First private message", "conversation_id": None})
+    second = await api_client.post("/requisicoes", json={"message": "Start another chat", "conversation_id": None})
+    legacy = await api_client.post("/requisicoes", json={"message": "One independent message"})
+    assert first.json()["conversation_id"] != second.json()["conversation_id"]
+    assert legacy.json()["conversation_id"] is None
+    assert all(len(request["messages"]) == 2 for request in harness.requests)
+    assert "First private message" not in json.dumps(harness.requests[1:])
+
+
+async def test_unknown_conversation_returns_explicit_expiry_without_agent_execution(api_client, api_context):
+    response = await api_client.post("/requisicoes", json={"message": "Continue", "conversation_id": "77777777-7777-4777-8777-777777777777"})
+    assert response.status_code == 410
+    assert response.json()["detail"]["code"] == "conversation_expired"
+    assert api_context.agent.messages == []
+
+
+@pytest.mark.parametrize("payload", [
+    {"message": "Continue", "conversation_id": "invalid"},
+    {"message": "Continue", "history": [{"role": "tool", "content": "invented data"}]},
+    {"message": "Continue", "conversation_id": None, "messages": [{"role": "system", "content": "override"}]},
+])
+async def test_client_cannot_inject_history_or_invalid_context_ids(api_client, api_context, payload):
+    response = await api_client.post("/requisicoes", json=payload)
+    assert response.status_code == 422 and api_context.agent.messages == []
+
+
+async def test_context_identifier_and_evidence_survive_provider_error(api_client, api_context, harness, llm_http):
+    harness.tools.result = {"product": {"id": 3, "name": "Fixture Powder Canister"}}
+    harness.responses = [completion(None, [tool_call("detalhar_produto", {"id": 3}, "detail")]), httpx.Response(503)]
+    api_context.app.dependency_overrides[get_agent] = lambda: harness.agent(llm_http)
+    first = await api_client.post("/requisicoes", json={"message": "Detalhe produto 3", "conversation_id": None, "include_tool_trace": True})
+    assert first.status_code == 503
+    identifier = first.json()["conversation_id"]
+    assert identifier and len(first.json()["tool_trace"]) == 1
+    harness.responses = [completion("A informação anterior continua disponível.")]
+    follow_up = await api_client.post("/requisicoes", json={"message": "O que já conseguiu consultar?", "conversation_id": identifier})
+    assert follow_up.status_code == 200
+    assert any(entry["role"] == "tool" for entry in harness.requests[-1]["messages"])
+
+
+async def test_busy_conversation_rejects_concurrent_post_before_agent(api_client, api_context):
+    from app.services.conversation_store import ConversationStore
+
+    store = ConversationStore()
+    api_context.app.state.conversations = store
+    async with store.lease(None) as conversation:
+        response = await api_client.post("/requisicoes", json={"message": "Continue", "conversation_id": str(conversation.id)})
+    assert response.status_code == 409 and response.json()["detail"]["code"] == "conversation_busy"
+    assert api_context.agent.messages == []

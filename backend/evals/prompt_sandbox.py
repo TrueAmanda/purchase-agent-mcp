@@ -22,6 +22,15 @@ class PromptSandbox:
         }
         if scenario == "missing":
             self.product = {"id": 1, "name": "Fixture keyboard", "price": "100.00", "currency": "USD"}
+        if scenario == "makeup":
+            self.product = {"id": 1, "name": "Fixture mascara", "description": "Synthetic mascara for search evaluation.",
+                            "price": "10.00", "currency": "USD", "stock": 10, "category": "beauty"}
+        if scenario == "authorized_makeup":
+            self.product = {
+                "id": 1, "name": "Fixture mascara", "description": "Synthetic purchase evaluation product.",
+                "price": "9.99", "currency": "USD", "stock": 99, "category": "beauty",
+                "minimum_order_quantity": 48, "warranty_information": "1 week",
+            }
         self.definitions = [
             ToolDefinition(name="buscar_produtos", description="Search the evaluation catalog by term.", parameters={
                 "type": "object", "properties": {"termo": {"type": "string", "minLength": 1}},
@@ -33,7 +42,10 @@ class PromptSandbox:
             }),
             ToolDefinition(name="criar_requisicao", description=(
                 "Persist a purchase request when creation is intended. Reuse the same idempotency_key on retries. "
-                "Supply product IDs and quantities, never prices. Product prices are verified by this tool."
+                "Supply product IDs and quantities, never prices. Product prices are verified by this tool. "
+                "For a NEW purchase intent without a previous key in conversation history, "
+                "use this valid idempotency_key: 33333333-3333-4333-8333-333333333333. "
+                "For retries, reuse the original key from history instead. This is not a requisition number."
             ), parameters={
                 "type": "object", "properties": {"request": {
                     "type": "object", "properties": {
@@ -61,7 +73,7 @@ class PromptSandbox:
             if self.scenario == "search_error":
                 raise ToolExecutionError("Synthetic catalog outage.")
             products = [] if self.scenario == "empty" else [deepcopy(self.product)]
-            if "farinha" in arguments["termo"].lower():
+            if any(term in arguments["termo"].lower() for term in ("farinha", "flour")):
                 products = [{"id": 2, "name": "Fixture flour", "price": "10.00", "currency": "USD"}]
             return {"status": "success" if products else "no_results", "products": products, "total": len(products)}
         if name == "detalhar_produto":
@@ -77,9 +89,10 @@ class PromptSandbox:
                 raise ToolExecutionError("Synthetic persistence outage.")
             if any(item["product_id"] != 1 for item in data["items"]):
                 raise ToolExecutionError("Synthetic product not found.")
+            price = Decimal(self.product["price"])
             items = [{
-                **item, "unit_price": "100.00",
-                "subtotal": str(Decimal("100.00") * item["quantity"]),
+                **item, "unit_price": str(price),
+                "subtotal": str(price * item["quantity"]),
             } for item in data["items"]]
             return {
                 "request_number": self.request_number, "items": items, "currency": "USD",

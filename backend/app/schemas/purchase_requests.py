@@ -16,6 +16,9 @@ class PurchaseMessageInput(BaseModel):
 
     message: Annotated[str, StringConstraints(strict=True, strip_whitespace=True, min_length=1, max_length=20000)]
     include_tool_trace: bool = Field(default=False, strict=True)
+    conversation_id: UUID | None = Field(
+        default=None, description="Send null to start a conversation, then its returned UUID to continue. Omit for a single independent request.",
+    )
 
 
 class PurchaseItemRead(BaseModel):
@@ -49,10 +52,11 @@ class ConfirmedPurchaseRequest(PurchaseRequestRead):
 
 
 class ToolTraceEntry(BaseModel):
-    name: str
+    order: int = Field(gt=0, description="One-based invocation order within this request; repeated names remain separate.")
+    name: Literal["buscar_produtos", "detalhar_produto", "criar_requisicao"]
     status: Literal["success", "error", "timeout"]
     code: str | None = None
-    duration_ms: float = Field(default=0, ge=0)
+    duration_ms: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     result: dict[str, int | bool] | None = Field(
         default=None, description="Safe counts and replay flag; no raw tool payload or personal data.",
     )
@@ -63,6 +67,7 @@ class PurchaseMessageResponse(BaseModel):
     message: str = Field(description="Agent text; use status and requisitions to determine confirmed registration.")
     requisitions: list[ConfirmedPurchaseRequest] = Field(default_factory=list)
     tool_trace: list[ToolTraceEntry] | None = None
+    conversation_id: UUID | None = None
 
     @model_validator(mode="after")
     def require_confirmation_for_created(self):
@@ -85,6 +90,8 @@ class APIErrorDetail(BaseModel):
 
 class APIErrorResponse(BaseModel):
     detail: APIErrorDetail
+    tool_trace: list[ToolTraceEntry] | None = None
+    conversation_id: UUID | None = None
 
 
 class InputValidationErrorResponse(BaseModel):

@@ -1,4 +1,5 @@
-import type { PurchaseListResponse, PurchaseRequisition, PurchaseResponse } from '../types/purchases';
+import type { PurchaseListResponse, PurchaseRequisition, PurchaseResponse, ToolTraceEntry } from '../types/purchases';
+import { decodeToolTrace } from './toolTrace';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
 const POST_TIMEOUT_MS = 180_000;
@@ -6,7 +7,11 @@ const DECIMAL = /^\d+(?:\.\d+)?$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class PurchaseApiError extends Error {
-  constructor(message: string, public readonly code: string, public readonly uncertain = true) {
+  constructor(
+    message: string, public readonly code: string, public readonly uncertain = true,
+    public readonly toolTrace: ToolTraceEntry[] | null = null,
+    public readonly conversationId: string | null = null,
+  ) {
     super(message);
     this.name = 'PurchaseApiError';
   }
@@ -38,6 +43,10 @@ const errorMessages: Record<string, string> = {
   creation_unconfirmed: 'Não foi possível confirmar a gravação da requisição.',
   idempotency_conflict: 'Este pedido entrou em conflito com uma tentativa anterior. Consulte os registros antes de reenviar.',
   invalid_amount: 'O valor retornado pelo catálogo ultrapassa o limite suportado.',
+  conversation_expired: 'Esta conversa expirou ou o serviço reiniciou. Clique em Nova conversa e informe novamente os detalhes do pedido.',
+  conversation_busy: 'Outra mensagem desta conversa está sendo processada. Aguarde a resposta antes de continuar.',
+  conversation_capacity: 'O serviço de conversas está ocupado. Aguarde antes de tentar novamente.',
+  invalid_conversation_configuration: 'A memória de conversa precisa ser configurada no serviço.',
 };
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -49,6 +58,9 @@ function amount(value: unknown, nullable = false) {
 }
 function positiveInteger(value: unknown) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+function conversationId(value: unknown): string | null {
+  return typeof value === 'string' && UUID.test(value) ? value : null;
 }
 function requisition(value: unknown): value is PurchaseRequisition {
   return object(value) && positiveInteger(value.id) && value.status === 'registered'
@@ -88,7 +100,8 @@ async function request(path: string, init: RequestInit, timeoutMs = POST_TIMEOUT
       const message = errorMessages[code] || (response.status === 422
         ? 'Confira o pedido enviado. Informe uma mensagem válida com até 20.000 caracteres.'
         : 'Não foi possível concluir a operação. Tente consultar os registros antes de reenviar uma compra.');
-      throw new PurchaseApiError(message, code);
+      throw new PurchaseApiError(message, code, true, object(payload) ? decodeToolTrace(payload.tool_trace) : null,
+        object(payload) ? conversationId(payload.conversation_id) : null);
     }
     return payload;
   } catch (error) {
@@ -100,19 +113,19 @@ async function request(path: string, init: RequestInit, timeoutMs = POST_TIMEOUT
   } finally { clearTimeout(timeout); }
 }
 
-export async function submitPurchase(message: string): Promise<PurchaseResponse> {
+export async function submitPurchase(message: string, currentConversationId: string | null = null): Promise<PurchaseResponse> {
   const trimmed = message.trim();
   if (!trimmed || trimmed.length > 20_000) {
     throw new PurchaseApiError('Escreva um pedido com até 20.000 caracteres.', 'invalid_message', false);
   }
   const payload = await request('/requisicoes', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message: trimmed, include_tool_trace: false }),
+    body: JSON.stringify({ message: trimmed, include_tool_trace: true, conversation_id: currentConversationId }),
   });
   if (!purchaseResponse(payload)) {
     throw new PurchaseApiError('A resposta recebida não confirma uma requisição válida. Consulte os registros antes de reenviar.', 'invalid_contract');
   }
-  return payload;
+  return { ...payload, tool_trace: decodeToolTrace(payload.tool_trace), conversation_id: conversationId(payload.conversation_id) };
 }
 
 export async function listPurchases(): Promise<PurchaseListResponse> {

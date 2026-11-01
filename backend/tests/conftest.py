@@ -22,7 +22,7 @@ def anyio_backend():
 @pytest.fixture(autouse=True)
 def offline_agent_environment(monkeypatch):
     for name in os.environ:
-        if name.startswith(("OPENROUTER_", "AGENT_")):
+        if name.startswith(("OPENROUTER_", "AGENT_", "CONVERSATION_")):
             monkeypatch.delenv(name, raising=False)
 
     async def reject_async(*args, **kwargs):

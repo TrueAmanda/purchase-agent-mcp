@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../App';
-import { answer, created, jsonResponse, requisition } from '../test/fixtures';
+import { answer, created, jsonResponse, requisition, trace, conversationId } from '../test/fixtures';
 
 const fetchMock = vi.fn<typeof fetch>();
 beforeEach(() => { fetchMock.mockReset(); vi.stubGlobal('fetch', fetchMock); });
@@ -48,7 +48,8 @@ describe('purchase chat', () => {
     expect(screen.getByText('3', { selector: 'dd' })).toBeTruthy();
     expect(screen.getByText(/1\.799,99/, { selector: 'dd' })).toBeTruthy();
     expect(screen.getByText(/5\.399,97/, { selector: '.purchase-total strong' })).toBeTruthy();
-    expect(screen.queryByText(/duration_ms|buscar_produtos|tool_trace/)).toBeNull();
+    expect(screen.getByText('Ferramentas utilizadas')).toBeTruthy();
+    expect(screen.queryByText(/duration_ms|tool_trace/)).toBeNull();
   });
 
   it('distinguishes idempotent replay from a newly created record', async () => {
@@ -145,5 +146,81 @@ describe('purchase chat', () => {
     expect(within(dialog).getAllByText('Não informado')).toHaveLength(2);
     expect(within(dialog).getByText(/moeda não informada/)).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not infer tool usage from assistant text and keeps each request history separate', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...answer, message: 'I claim buscar_produtos ran.', tool_trace: [] }))
+      .mockResolvedValueOnce(jsonResponse(created, 201));
+    render(<App />); send('Primeiro pedido');
+    await screen.findByText('I claim buscar_produtos ran.');
+    send('Segundo pedido');
+    await screen.findByText(requisition.request_number);
+    const replies = screen.getAllByRole('article', { name: 'Resposta do assistente' });
+    expect(within(replies[0]).getByText('Nenhuma chamada')).toBeTruthy();
+    expect(replies[0].querySelectorAll('.tool-event')).toHaveLength(0);
+    expect(replies[1].querySelectorAll('.tool-event')).toHaveLength(2);
+    expect(within(replies[1]).getByText('2 chamadas')).toBeTruthy();
+  });
+
+  it('shows a failed MCP call on an HTTP error without a purchase confirmation', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ detail: { code: 'product_not_found', message: 'private-body' },
+      tool_trace: [{ ...trace[0], name: 'detalhar_produto', status: 'error', code: 'product_not_found', result: null }] }, 422));
+    render(<App />); send('Detalhe um produto inexistente');
+    await screen.findByRole('alert');
+    expect(screen.getByText('1 chamada')).toBeTruthy();
+    expect(screen.getByText('detalhar_produto')).toBeTruthy();
+    expect(screen.getByText('Falhou')).toBeTruthy();
+    expect(screen.queryByText('Registro confirmado')).toBeNull();
+    expect(screen.queryByText(/private-body/)).toBeNull();
+  });
+
+  it('shows history as unavailable after a connection error, not as zero calls', async () => {
+    fetchMock.mockRejectedValue(new TypeError('Connection closed'));
+    render(<App />); send('Teste');
+    await screen.findByRole('alert');
+    expect(screen.getByText('Histórico indisponível')).toBeTruthy();
+    expect(screen.queryByText('Nenhuma chamada')).toBeNull();
+  });
+
+  it('continues the same server conversation and resets it only on Nova conversa', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...answer, message: 'Encontrei um pó compacto.' }))
+      .mockResolvedValueOnce(jsonResponse({ ...answer, message: 'Detalhes do pó compacto.' }))
+      .mockResolvedValueOnce(jsonResponse({ ...answer, message: 'Outra conversa.' }));
+    render(<App />);
+    send('Procure opções de maquiagem');
+    await screen.findByText('Encontrei um pó compacto.');
+    send('Quero mais detalhes do pó compacto');
+    await screen.findByText('Detalhes do pó compacto.');
+    expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string).conversation_id).toBeNull();
+    expect(JSON.parse(fetchMock.mock.calls[1][1]?.body as string)).toEqual({
+      message: 'Quero mais detalhes do pó compacto', include_tool_trace: true, conversation_id: conversationId,
+    });
+    fireEvent.click(within(screen.getByRole('main')).getByRole('button', { name: 'Nova conversa' }));
+    send('Outro assunto de compras');
+    await screen.findByText('Outra conversa.');
+    expect(JSON.parse(fetchMock.mock.calls[2][1]?.body as string).conversation_id).toBeNull();
+    expect(screen.queryByText('Encontrei um pó compacto.')).toBeNull();
+  });
+
+  it('keeps the conversation identifier returned with an error for a later follow-up', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: { code: 'llm_unavailable', message: 'Provider failure' },
+      conversation_id: conversationId, tool_trace: [] }, 503))
+      .mockResolvedValueOnce(jsonResponse({ ...answer, message: 'Resultado da consulta anterior.' }));
+    render(<App />); send('Procure maquiagem');
+    await screen.findByRole('alert');
+    send('O que você conseguiu consultar?');
+    await screen.findByText('Resultado da consulta anterior.');
+    expect(JSON.parse(fetchMock.mock.calls[1][1]?.body as string).conversation_id).toBe(conversationId);
+  });
+
+  it('informs expired or missing context without inventing a continuation', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(answer))
+      .mockResolvedValueOnce(jsonResponse({ detail: { code: 'conversation_expired', message: 'Expired' } }, 410));
+    render(<App />); send('Procure maquiagem');
+    await screen.findByText(answer.message);
+    send('Quero detalhes');
+    expect((await screen.findByRole('alert')).textContent).toContain('Nova conversa');
+    expect(screen.getByRole('status').textContent).toContain('O contexto desta conversa expirou');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

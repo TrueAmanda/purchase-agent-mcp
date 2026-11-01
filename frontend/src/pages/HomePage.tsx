@@ -7,7 +7,7 @@ import { Welcome } from '../components/Welcome';
 import { usePurchaseChat } from '../hooks/usePurchaseChat';
 
 export function HomePage() {
-  const { messages, pending, send, clear } = usePurchaseChat();
+  const { messages, pending, send, clear, contextNotice } = usePurchaseChat();
   const [suggestion, setSuggestion] = useState<{ text: string; revision: number } | null>(null);
   const [showRecords, setShowRecords] = useState(false);
   const end = useRef<HTMLDivElement>(null);
@@ -28,7 +28,7 @@ export function HomePage() {
       <nav><div className="nav-current" aria-current="page"><Icon name="chat" size={18} /> Assistente <span className="nav-dot" /></div>
         <button type="button" className="nav-link" onClick={() => setShowRecords(true)}><Icon name="box" size={18} /> Requisições salvas</button></nav>
       <div className="sidebar-note"><span className="sidebar-note-icon"><Icon name="sparkles" size={19} /></span>
-        <strong>Um pedido bem definido<br />faz a diferença.</strong><p>Cada envio é independente. Inclua produto, quantidade e orçamento para uma resposta mais precisa.</p></div>
+        <strong>Uma conversa que<br />acompanha sua compra.</strong><p>Peça mais detalhes de uma opção já mostrada. Use Nova conversa para começar outro assunto.</p></div>
       <div className="sidebar-footer"><div className="currency-symbol">$</div><div><strong>Valores em US$</strong><span>Exclusivamente dólares americanos</span></div></div>
     </aside>
     <main id="main-content" className="chat-main">
@@ -44,7 +44,8 @@ export function HomePage() {
           </div>}
       </div>
       <div className="composer-area"><Composer pending={pending} suggestion={suggestion} onSend={send} />
-        <p className="app-footnote">Cada envio é independente. Inclua todos os detalhes do pedido.</p></div>
+        <p className={`app-footnote${contextNotice ? ' input-error' : ''}`} role={contextNotice ? 'status' : undefined}>
+          {contextNotice ?? 'O assistente considera o contexto recente desta conversa.'}</p></div>
     </main>
     {showRecords && <SavedRequests onClose={() => setShowRecords(false)} />}
   </div>;

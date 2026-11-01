@@ -16,6 +16,7 @@ from app.schemas.purchase_requests import (
     ConfirmedPurchaseRequest, PurchaseMessageResponse, PurchaseRequestListResponse,
     PurchaseRequestRead, ToolTraceEntry,
 )
+from app.services.tool_trace import build_tool_trace, error_code as _error_code, event_failed as _event_failed
 
 logger = logging.getLogger(__name__)
 
@@ -34,33 +35,10 @@ TOOL_FAILURES = {
 }
 
 
-def _error_code(event: ToolExecutionEvent) -> str:
-    if event.outcome != "ok":
-        return event.outcome
-    error = (event.result or {}).get("error")
-    code = error.get("code") if isinstance(error, dict) else None
-    return code if isinstance(code, str) and code in TOOL_FAILURES else "tool_execution_failed"
-
-
-def _safe_summary(event: ToolExecutionEvent) -> dict | None:
-    if _event_failed(event):
-        return None
-    data = event.result or {}
-    if event.name == "buscar_produtos" and isinstance(data.get("products"), list):
-        return {"product_count": len(data["products"])}
-    if event.name == "detalhar_produto" and isinstance(data.get("product"), dict):
-        return {"product_count": 1}
-    if event.name == "criar_requisicao" and isinstance(data.get("items"), list):
-        summary = {"item_count": len(data["items"])}
-        if type(data.get("replayed")) is bool:
-            summary["replayed"] = data["replayed"]
-        return summary
-    return None
-
-
 class PurchaseAPIError(Exception):
     def __init__(self, code: str, message: str, status_code: int):
         self.code, self.message, self.status_code = code, message, status_code
+        self.tool_events = None
         super().__init__(message)
 
 
@@ -80,11 +58,6 @@ def _unconfirmed() -> PurchaseAPIError:
         "Purchase registration was not confirmed. A write may have completed; check saved requisitions before retrying.",
         502,
     )
-
-
-def _event_failed(event: ToolExecutionEvent) -> bool:
-    data = event.result or {}
-    return event.outcome != "ok" or "error" in data or data.get("isError") is True
 
 
 class PurchaseRequestService:
@@ -143,14 +116,7 @@ class PurchaseRequestService:
 
     @staticmethod
     def _trace(events: list[ToolExecutionEvent]) -> list[ToolTraceEntry]:
-        return [ToolTraceEntry(
-            name=event.name,
-            status="timeout" if _error_code(event) in {"tool_timeout", "api_timeout"} else (
-                "success" if not _event_failed(event) else "error"
-            ),
-            code=None if not _event_failed(event) else _error_code(event),
-            duration_ms=event.duration_ms, result=_safe_summary(event),
-        ) for event in events]
+        return build_tool_trace(events)
 
     @staticmethod
     def _only_empty_searches(events: list[ToolExecutionEvent]) -> bool:
@@ -162,6 +128,13 @@ class PurchaseRequestService:
 
     async def submit(self, message: str, agent: AgentRunner, include_trace: bool) -> tuple[PurchaseMessageResponse, int]:
         result = await agent.run(message)
+        try:
+            return await self._respond(result, include_trace)
+        except PurchaseAPIError as error:
+            error.tool_events = list(result.tool_events)
+            raise
+
+    async def _respond(self, result: AgentResult, include_trace: bool) -> tuple[PurchaseMessageResponse, int]:
         events = result.tool_events
         receipts = []
         failed_events = []
