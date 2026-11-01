@@ -27,7 +27,7 @@ Referência: `Case-FDE.pdf`, nove páginas, fornecido pelo usuário em Downloads
 | Diferencial | Situação |
 | --- | --- |
 | Exibir ferramentas usadas no chat | Eventos de execução e painel existentes, com testes de ordem, falha e repetição; inspeção visual real não repetida nesta etapa |
-| Script com cinco pedidos e quantidade de acertos | Não entregue como roteiro específico de cinco pedidos reais. As avaliações opcionais existentes e os testes determinísticos não são apresentados como cumprimento literal desse diferencial |
+| Script com cinco pedidos e quantidade de acertos | Entregue em `backend/evals/purchase_evaluation.py`, com cruzamento API/MCP/SQL/GET/DummyJSON, proteção contra repetição e relatório PASS/FAIL. Execução real: **2/5 (40%)**; falhas de orçamento, conclusão da compra e argumentos do modelo preservadas. Ver [agent-evaluation.md](agent-evaluation.md) |
 | CI com lint e testes | Workflow existente atualizado para conferir também os utilitários novos; comandos equivalentes executados localmente. Execução remota desta branch no GitHub Actions não comprovada nesta etapa |
 | Terceira ferramenta `criar_requisicao`, com decisão do agente | Gravação exclusivamente na ferramenta MCP; testes confirmam criação, idempotência e rollback sem criar uma segunda gravação no POST |
 

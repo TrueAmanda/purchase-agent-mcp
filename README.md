@@ -552,6 +552,14 @@ Quando o catálogo de ferramentas está vazio, `build_system_prompt()` acrescent
 
 O prompt orienta o modelo; não é uma garantia matemática contra alucinação ou violação de orçamento. O executor garante ferramentas permitidas, validação de argumentos e limites de execução; o MCP reconsulta os produtos, calcula os valores com Decimal e grava atomicamente. A seleção semântica de categoria, quantidade e orçamento continua a cargo do modelo. O projeto usa exclusivamente USD, sem câmbio; outras moedas exigem recusa. O POST confirma os dados persistidos, mas não transforma a interpretação de linguagem natural em uma garantia determinística.
 
+### Avaliação real de cinco pedidos
+
+O diferencial de avaliação do case está em [docs/agent-evaluation.md](docs/agent-evaluation.md), com comandos e critérios. `backend/evals/purchase_evaluation.py` executa cinco pedidos pela API real e cruza catálogo externo, histórico MCP, SQL e GET, sem confiar apenas na resposta do LLM. Usa as dependências existentes e não roda automaticamente na CI. **Consome créditos e pode criar requisições locais**; o diário em `.agent-evaluation/` impede o reenvio pelo mesmo comando.
+
+Execução real em 01/11/2026: **2/5 acertos (40%)**. Quantidade zero e orçamento impossível passaram. Laptops foram gravados acima do teto; smartphones não chegaram à criação; produto inexistente retornou erro de argumentos. O relatório registra as falhas reais, sem mudar o agente para obter aprovação. A requisição de teste criada foi preservada; detalhes e número estão no documento.
+
+Validação do avaliador: **37 testes offline aprovados; suíte completa com 477 aprovados e 1 pulado; Ruff aprovado**. Os testes normais não fazem as cinco chamadas pagas.
+
 ### Otimização e avaliação dos prompts
 
 Os prompts foram consolidados em regras de estilo, escopo, dados, criação/idempotência e execução/segurança. Permanecem os exemplos de receita de bolo versus compra de uma lista fornecida e a explicação curta de ferramentas desconectadas, que cobrem falhas observadas manualmente.
