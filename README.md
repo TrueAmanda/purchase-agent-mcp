@@ -1,6 +1,6 @@
 # purchase-agent-mcp
 
-Agente de compras em desenvolvimento com FastAPI, servidor MCP independente, PostgreSQL e React/TypeScript. As ferramentas MCP `buscar_produtos(termo)` e `detalhar_produto(id)` consultam a DummyJSON; `criar_requisicao(request)` valida os produtos e grava uma requisição de compra no PostgreSQL. O agente OpenRouter descobre e executa essas ferramentas pelo protocolo MCP, conforme as decisões do modelo. A interface de compras ainda não foi implementada.
+Agente de compras com FastAPI, servidor MCP independente, PostgreSQL e interface React/TypeScript. As ferramentas MCP `buscar_produtos(termo)` e `detalhar_produto(id)` consultam a DummyJSON; `criar_requisicao(request)` valida os produtos e grava uma requisição de compra no PostgreSQL. O agente OpenRouter descobre e executa essas ferramentas pelo protocolo MCP, conforme as decisões do modelo. A interface permite enviar pedidos, visualizar respostas e consultar registros confirmados.
 
 ## Iniciar com Docker Compose
 
@@ -29,7 +29,7 @@ Os quatro serviços devem aparecer como `healthy`. Na primeira execução, o dow
 | MCP | http://localhost:8001/mcp | `mcp-server:8001/mcp` |
 | PostgreSQL | Sem porta publicada | `postgres:5432` |
 
-A rede padrão do Compose permite resolver os nomes dos serviços por DNS. `localhost` dentro de um container aponta para esse próprio container. O navegador usa `/api/` no frontend; o Nginx encaminha esse caminho ao backend pela rede interna, removendo o prefixo. Exemplo: `http://localhost:5173/api/health` chega a `http://backend:8000/health`. O frontend continua estático e ainda não faz chamadas de compras.
+A rede padrão do Compose permite resolver os nomes dos serviços por DNS. `localhost` dentro de um container aponta para esse próprio container. O navegador usa `/api/` no frontend; o Nginx encaminha esse caminho ao backend pela rede interna, removendo o prefixo. Exemplo: `http://localhost:5173/api/requisicoes` chega a `http://backend:8000/requisicoes`. O frontend serve o build React com Nginx e realiza chamadas HTTP para o backend.
 
 ## Configuração
 
@@ -44,7 +44,7 @@ Os valores padrão são destinados ao desenvolvimento local: banco e usuário `p
 
 No Compose, backend e MCP recebem os mesmos campos de conexão do PostgreSQL; a URL é montada com `URL.create`, aceitando caracteres especiais na senha. `DATABASE_URL` é uma alternativa para executar esses processos fora do Compose, usando o formato `postgresql+psycopg://...`. Nesse caso, forneça as variáveis ao processo: os serviços não carregam `.env` automaticamente e o PostgreSQL precisa estar acessível fora da rede Docker.
 
-`OPENROUTER_API_KEY` e `OPENROUTER_MODEL` são necessários somente ao invocar o agente. O backend e seus healthchecks continuam iniciando sem chave LLM. `VITE_API_BASE_URL` continua reservado para a interface futura. Nenhum segredo é enviado ao build do frontend. O proxy `/api/` já está configurado no Nginx.
+`OPENROUTER_API_KEY` e `OPENROUTER_MODEL` são necessários somente ao invocar o agente. O backend e seus healthchecks continuam iniciando sem chave LLM. `VITE_API_BASE_URL` é a URL pública da API usada pelo React, padrão `/api`; o Compose a fornece como argumento de build. Recrie o frontend ao alterá-la. Nenhum segredo é enviado ao build do frontend. O proxy `/api/` está configurado no Nginx.
 
 ### Moeda aceita: somente USD (US$)
 
@@ -55,6 +55,51 @@ Pedidos em reais/BRL/R$, euros/EUR, libras/GBP ou qualquer outra moeda estão fo
 Registros antigos e replays preservam a moeda gravada, inclusive `null` ou BRL; não há atualização retroativa nem conversão dos valores. A persistência de novas compras em USD e a rejeição de moedas arbitrárias nos argumentos MCP são regras de código. A interpretação da moeda no texto livre e a recusa seguem o system prompt, sujeitas ao comportamento do LLM, como as demais regras de escopo.
 
 Validação desta política: **349 testes offline aprovados e 1 pulado**, **151 aprovados com PostgreSQL isolado** e Ruff sem erros. Com OpenRouter real, os **9 cenários selecionados de moeda/campos ausentes passaram**: seis recusas sem executar ferramentas, duas buscas permitidas em US$/USD e campos ausentes preservados. Na primeira rodada, sete respostas corretas não foram reconhecidas por verificações textuais excessivamente literais (“só trabalho” e USD sem a palavra “moeda”); os verificadores foram corrigidos e os nove cenários reexecutados. As verificações de zero chamadas e ausência de conversão foram mantidas. No POST real, R$ retornou `tool_trace: []`; US$ executou `buscar_produtos`, sem gravar compra.
+
+## Interface React
+
+Abra **http://localhost:5173** após `docker compose up --build -d`. O chat em português tem tema escuro, destaque roxo, sugestões editáveis, mensagens distintas de usuário/agente e estados de processamento, erro, catálogo vazio e registro confirmado. Sugestões apenas preenchem o campo; o envio exige ação do usuário. Enter envia, Shift + Enter insere uma linha. Campos vazios e pedidos acima de 20.000 caracteres são bloqueados.
+
+O navegador envia `POST /api/requisicoes` com `{"message":"...","include_tool_trace":false}`. O Nginx encaminha para `backend:8000/requisicoes`. O frontend não chama OpenRouter, MCP ou DummyJSON diretamente e não recebe credenciais. A consulta **Requisições salvas** usa `GET /api/requisicoes?limit=10&offset=0`; permite conferir os últimos registros, inclusive depois de uma operação incerta, sem repetir a compra. O botão **Nova conversa** limpa somente as mensagens locais, preservando o banco.
+
+A interface conserva o histórico visual apenas em memória. O backend atual processa cada envio de forma independente: inclua os detalhes completos do pedido, mesmo ao responder uma pergunta anterior. Atualizar a página limpa o histórico visual; os registros persistidos continuam disponíveis. Não há armazenamento local de mensagens nem memória de conversa adicionada ao agente nesta etapa.
+
+Componentes e responsabilidades:
+
+| Arquivo | Responsabilidade |
+| --- | --- |
+| `frontend/src/pages/HomePage.tsx` | Layout, navegação, conversa e composição dos componentes |
+| `components/Welcome.tsx` | Apresentação inicial e sugestões que preenchem o pedido |
+| `components/Composer.tsx` | Entrada, limite de caracteres, teclado e botão de envio |
+| `components/ChatMessage.tsx` | Mensagens, carregamento, ausência de resultados e erros |
+| `components/RequisitionCard.tsx` | Número, produtos, quantidades, preços, subtotais, total, moeda e dados do registro |
+| `components/SavedRequests.tsx` | Consulta de até 10 registros reais em diálogo acessível por teclado |
+| `hooks/usePurchaseChat.ts` | Mensagens, processamento e bloqueio síncrono contra envios duplicados |
+| `services/purchaseApi.ts` | Fetch, timeouts, contratos de resposta e mensagens de erro em português |
+| `types/purchases.ts` | Contratos TypeScript do POST, GET, itens, registros e mensagens |
+| `utils/format.ts` | Formatação monetária com Intl/BigInt e datas locais |
+
+Cartões de confirmação só aparecem quando `status: created` vem acompanhado de registros estruturados válidos. O texto do assistente não gera números, produtos ou totais no frontend. Campos ausentes de registros antigos continuam desconhecidos, sem substituir por zero ou USD. Valores são recebidos como strings decimais; a formatação não perde centavos em quantias acima do limite seguro de `Number`, não calcula novos totais nem converte moedas. Replays são identificados como registros existentes.
+
+Durante um POST, campo, envio e nova conversa ficam desabilitados. Um bloqueio adicional em memória impede duas chamadas disparadas antes da próxima renderização. Não há retry automático: erros de rede/timeout podem ocorrer depois de uma gravação. A interface explica a incerteza e oferece consulta aos registros. Erros conhecidos da DummyJSON, MCP, OpenRouter, banco e validação recebem mensagens seguras em português; corpos brutos do provedor não são exibidos. A visualização detalhada de ferramentas fica para a próxima etapa e não é solicitada pelo chat.
+
+O navegador espera até 180 segundos pelo POST; o proxy Nginx permite 190 segundos, sem repetir o POST automaticamente. O proxy do Vite usa o mesmo limite. Esses valores acomodam o limite padrão de 120 segundos do agente. Se alterar o limite do backend para mais de 180 segundos, ajuste também os limites do frontend/proxy e refaça o build.
+
+Para desenvolvimento local, mantenha o backend disponível em `localhost:8000` e use Node.js **22.22.2+ na linha 22**, **24.15+ na linha 24** ou **26+**:
+
+```powershell
+cd frontend
+npm.cmd ci
+npm.cmd test
+npm.cmd run build
+npm.cmd run dev -- --port 5174
+```
+
+Abra **http://localhost:5174**. A porta separada permite manter o frontend Docker em 5173; o proxy do Vite encaminha `/api` ao backend sem exigir CORS. Em Linux/macOS, use `npm` em vez de `npm.cmd`. `VITE_API_BASE_URL` pode ser definida no processo ou em `frontend/.env.local` (ignorado pelo Git), sem credenciais; no Compose, é incorporada pelo build a partir do `.env` da raiz. `vite preview` serve o build, mas não substitui o proxy de desenvolvimento ou o Nginx do Compose.
+
+Os **51 testes** usam Vitest, React Testing Library, jsdom e fetch simulado. Cobrem envio/teclado/IME, mensagens, bloqueio de duplicação, validação, contratos inconsistentes, confirmação/replay, busca vazia, erros externos, rede/timeout, consulta de registros, dados legados, proteção contra interpretação de HTML e formatação monetária. Não acessam internet, OpenRouter ou dados de desenvolvimento. As dependências novas são apenas de desenvolvimento; a aplicação usa fetch nativo.
+
+O build local e o build Docker foram executados; o proxy foi verificado por HTTP com `/api/health` e `/api/requisicoes`. A revisão visual no navegador não pôde ser concluída: o controle do computador foi interrompido por não identificar a URL ativa com segurança. A responsividade está implementada em CSS com quebras em 1100, 800 e 520 pixels, mas não foi validada visualmente em um navegador nesta execução.
 
 ## API de requisições de compra
 
@@ -811,7 +856,7 @@ O teste TCP inicia um servidor MCP local em uma porta livre e usa `ClientSession
 
 Os testes antigos do MCP em `unittest` e o script dependente da DummyJSON real foram substituídos pela suíte Pytest. O `pytest.ini` da raiz permite executar backend e MCP juntos com `python -m pytest -q`; a configuração própria do MCP mantém seu comando isolado.
 
-Para o frontend: `cd frontend`, `npm.cmd ci` e `npm.cmd run build`. No Linux/macOS, use `npm`. Node.js 22.12+ ou 24+ é necessário. Para desenvolvimento local do frontend, `npm.cmd run dev`; o proxy Nginx está disponível na versão Docker.
+Para o frontend: `cd frontend`, `npm.cmd ci`, `npm.cmd test` e `npm.cmd run build`. Os requisitos de Node e a execução local com proxy estão na seção **Interface React**.
 
 ## Integração contínua (GitHub Actions)
 

@@ -1,0 +1,126 @@
+import type { PurchaseListResponse, PurchaseRequisition, PurchaseResponse } from '../types/purchases';
+
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
+const POST_TIMEOUT_MS = 180_000;
+const DECIMAL = /^\d+(?:\.\d+)?$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export class PurchaseApiError extends Error {
+  constructor(message: string, public readonly code: string, public readonly uncertain = true) {
+    super(message);
+    this.name = 'PurchaseApiError';
+  }
+}
+
+const errorMessages: Record<string, string> = {
+  api_unavailable: 'O catálogo de produtos está indisponível. Tente consultar novamente mais tarde.',
+  api_timeout: 'O catálogo de produtos demorou para responder. A consulta não foi concluída.',
+  api_http_error: 'O catálogo de produtos retornou um erro. Não foi possível concluir a consulta.',
+  invalid_response: 'O catálogo retornou dados inválidos. Os produtos não puderam ser confirmados.',
+  product_not_found: 'Um dos produtos solicitados não existe no catálogo.',
+  mcp_unavailable: 'O serviço de ferramentas está indisponível. Não foi possível concluir seu pedido.',
+  tool_catalog_error: 'Não foi possível carregar as ferramentas do assistente.',
+  llm_unavailable: 'O assistente está indisponível no momento. Tente novamente mais tarde.',
+  llm_timeout: 'O assistente demorou para responder. A operação não foi confirmada.',
+  llm_rate_limit: 'O assistente está recebendo muitos pedidos. Aguarde antes de tentar novamente.',
+  llm_authentication: 'O assistente não conseguiu acessar o provedor. Verifique a configuração do serviço.',
+  llm_credits: 'O provedor do assistente está sem saldo disponível.',
+  invalid_configuration: 'O assistente precisa ser configurado para receber pedidos.',
+  invalid_mcp_configuration: 'A conexão com o serviço de ferramentas precisa ser configurada.',
+  invalid_llm_response: 'O assistente retornou uma resposta inválida. A operação não foi confirmada.',
+  llm_incomplete: 'A resposta do assistente foi interrompida. A operação não foi confirmada.',
+  iteration_limit: 'O assistente atingiu o limite de etapas e não conseguiu concluir seu pedido.',
+  tool_call_limit: 'O assistente atingiu o limite de chamadas e não conseguiu concluir seu pedido.',
+  agent_timeout: 'O tempo de processamento terminou. A operação não foi confirmada.',
+  tool_timeout: 'Uma ferramenta demorou para responder. A operação não foi confirmada.',
+  database_unavailable: 'O banco de requisições está indisponível. Não foi possível confirmar o registro.',
+  database_error: 'Não foi possível consultar os registros de compra.',
+  creation_unconfirmed: 'Não foi possível confirmar a gravação da requisição.',
+  idempotency_conflict: 'Este pedido entrou em conflito com uma tentativa anterior. Consulte os registros antes de reenviar.',
+  invalid_amount: 'O valor retornado pelo catálogo ultrapassa o limite suportado.',
+};
+
+function object(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function nullableString(value: unknown) { return value === null || typeof value === 'string'; }
+function amount(value: unknown, nullable = false) {
+  return (nullable && value === null) || (typeof value === 'string' && DECIMAL.test(value));
+}
+function positiveInteger(value: unknown) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+function requisition(value: unknown): value is PurchaseRequisition {
+  return object(value) && positiveInteger(value.id) && value.status === 'registered'
+    && (value.request_number === null || (typeof value.request_number === 'string' && UUID.test(value.request_number)))
+    && typeof value.title === 'string' && typeof value.requester_name === 'string'
+    && typeof value.created_at === 'string' && Number.isFinite(Date.parse(value.created_at))
+    && nullableString(value.currency) && amount(value.total, true) && Array.isArray(value.items)
+    && value.items.every((item: unknown) => object(item) && positiveInteger(item.id)
+      && nullableString(item.product_id) && nullableString(item.name) && typeof item.description === 'string'
+      && positiveInteger(item.quantity) && amount(item.unit_price) && amount(item.subtotal, true));
+}
+function purchaseResponse(value: unknown): value is PurchaseResponse {
+  if (!object(value) || !['created', 'no_results', 'response'].includes(String(value.status))
+    || typeof value.message !== 'string' || !Array.isArray(value.requisitions)) return false;
+  if (value.status !== 'created') return value.requisitions.length === 0;
+  return value.requisitions.length > 0 && value.requisitions.every((record: unknown) => requisition(record)
+    && record.request_number !== null && record.total !== null && record.items.length > 0
+    && typeof (record as unknown as Record<string, unknown>).replayed === 'boolean');
+}
+
+async function request(path: string, init: RequestInit, timeoutMs = POST_TIMEOUT_MS): Promise<unknown> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${API_BASE}${path}`, { ...init, signal: controller.signal, credentials: 'omit' });
+    let payload: unknown;
+    try { payload = await response.json(); } catch (error) {
+      if (controller.signal.aborted) throw error;
+      if (response.ok) {
+        throw new PurchaseApiError('O serviço retornou uma resposta inválida. A operação não foi confirmada.', 'invalid_response_body');
+      }
+      payload = null;
+    }
+    if (!response.ok) {
+      const detail = object(payload) && object(payload.detail) ? payload.detail : null;
+      const code = typeof detail?.code === 'string' ? detail.code : `http_${response.status}`;
+      const message = errorMessages[code] || (response.status === 422
+        ? 'Confira o pedido enviado. Informe uma mensagem válida com até 20.000 caracteres.'
+        : 'Não foi possível concluir a operação. Tente consultar os registros antes de reenviar uma compra.');
+      throw new PurchaseApiError(message, code);
+    }
+    return payload;
+  } catch (error) {
+    if (error instanceof PurchaseApiError) throw error;
+    if (controller.signal.aborted) {
+      throw new PurchaseApiError('A resposta demorou mais que o esperado. A operação não foi confirmada.', 'client_timeout');
+    }
+    throw new PurchaseApiError('Não foi possível conectar ao serviço. Verifique sua conexão e consulte os registros antes de reenviar uma compra.', 'connection_error');
+  } finally { clearTimeout(timeout); }
+}
+
+export async function submitPurchase(message: string): Promise<PurchaseResponse> {
+  const trimmed = message.trim();
+  if (!trimmed || trimmed.length > 20_000) {
+    throw new PurchaseApiError('Escreva um pedido com até 20.000 caracteres.', 'invalid_message', false);
+  }
+  const payload = await request('/requisicoes', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: trimmed, include_tool_trace: false }),
+  });
+  if (!purchaseResponse(payload)) {
+    throw new PurchaseApiError('A resposta recebida não confirma uma requisição válida. Consulte os registros antes de reenviar.', 'invalid_contract');
+  }
+  return payload;
+}
+
+export async function listPurchases(): Promise<PurchaseListResponse> {
+  const payload = await request('/requisicoes?limit=10&offset=0', { method: 'GET' }, 30_000);
+  if (!object(payload) || !Array.isArray(payload.requisitions) || !payload.requisitions.every(requisition)
+    || !positiveInteger(payload.limit) || typeof payload.offset !== 'number'
+    || !Number.isSafeInteger(payload.offset) || payload.offset < 0 || typeof payload.has_more !== 'boolean') {
+    throw new PurchaseApiError('Não foi possível interpretar os registros retornados pelo serviço.', 'invalid_contract', false);
+  }
+  return payload as unknown as PurchaseListResponse;
+}
