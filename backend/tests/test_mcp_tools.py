@@ -12,8 +12,7 @@ from fastapi import FastAPI
 import httpx
 from mcp.types import CallToolResult, TextContent
 import pytest
-from sqlalchemy import create_engine, func, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import func, select
 
 from app.api.dependencies import get_agent
 from app.api.router import api_router
@@ -23,64 +22,11 @@ from app.services.agent import AgentService
 from app.services.mcp_tools import MCPToolProvider
 from app.services.openrouter import OpenRouterClient
 from app.services.purchase_requests import PurchaseRequestService
-from purchase_mcp.repositories.purchase_requests import PurchaseRequestRepository
-from purchase_mcp.server import create_server
-from purchase_storage import Base, PurchaseRequest, PurchaseRequestItem
+from purchase_storage import PurchaseRequest, PurchaseRequestItem
 from agent_fixtures import completion, tool_call
 
 pytestmark = pytest.mark.anyio
 
-
-@pytest.fixture
-async def bridge(tmp_path, monkeypatch):
-    engine = create_engine(f"sqlite:///{(tmp_path / 'bridge.sqlite').as_posix()}",
-                           connect_args={"check_same_thread": False}, hide_parameters=True)
-    Base.metadata.create_all(engine)
-    sessions = sessionmaker(engine, expire_on_commit=False)
-    state = SimpleNamespace(calls=[], failure=None, empty=False)
-    products = {
-        1: {"id": 1, "title": "Fixture laptop", "price": 19.99, "description": "Fixture laptop only",
-            "category": "laptops", "stock": 20, "minimumOrderQuantity": 1},
-        2: {"id": 2, "title": "Fixture keyboard", "price": 0.1, "description": "Fixture keyboard only"},
-    }
-
-    def catalog(request):
-        assert request.url.host == "dummyjson.com"
-        state.calls.append(request.url.path)
-        if isinstance(state.failure, Exception):
-            raise state.failure
-        if state.failure is not None:
-            return httpx.Response(state.failure, text="private-upstream-content")
-        if request.url.path == "/products/search":
-            items = [] if state.empty else list(products.values())
-            return httpx.Response(200, json={"products": items, "total": len(items), "skip": 0, "limit": 30})
-        if request.url.path == "/products/category-list":
-            return httpx.Response(200, json=[])
-        product = products.get(int(request.url.path.rsplit("/", 1)[1]))
-        return httpx.Response(200, json=product) if product else httpx.Response(404)
-
-    monkeypatch.setattr("purchase_mcp.server.create_http_client", lambda timeout: httpx.AsyncClient(
-        base_url="https://dummyjson.com", transport=httpx.MockTransport(catalog), trust_env=False,
-    ))
-    monkeypatch.setenv("MCP_HOST", "127.0.0.1")
-    monkeypatch.setenv("MCP_PORT", "8001")
-    app = create_server(PurchaseRequestRepository(sessions)).streamable_http_app()
-    try:
-        async with app.router.lifespan_context(app):
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), trust_env=False) as http:
-                provider = MCPToolProvider(MCPSettings(server_url="http://127.0.0.1:8001/mcp"), http)
-                yield SimpleNamespace(provider=provider, sessions=sessions, state=state, app=app)
-    finally:
-        engine.dispose()
-
-
-@pytest.fixture
-def purchase_args():
-    return {"request": {
-        "title": "Integration test", "requester_name": "Fixture requester",
-        "idempotency_key": "11111111-1111-4111-8111-111111111111",
-        "items": [{"product_id": 1, "quantity": 3}, {"product_id": 2, "quantity": 3}],
-    }}
 
 
 def counts(bridge):

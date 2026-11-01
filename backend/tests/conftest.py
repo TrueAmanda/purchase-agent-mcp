@@ -1,17 +1,23 @@
-"""Offline agent fixtures: no LLM credentials, real tools or database are used."""
+"""Offline LLM fixtures and real MCP protocol over isolated SQL storage."""
 
 from copy import deepcopy
 import inspect
 import json
 import os
+from types import SimpleNamespace
 
 import httpx
 import pytest
+from sqlalchemy.orm import sessionmaker
 
 from app.core.agent_config import AgentSettings
 from app.schemas.agent import ToolDefinition
 from app.services.agent import AgentService
 from app.services.openrouter import OpenRouterClient
+from app.core.mcp_config import MCPSettings
+from app.services.mcp_tools import MCPToolProvider
+from purchase_mcp.repositories.purchase_requests import PurchaseRequestRepository
+from purchase_mcp.server import create_server
 
 
 @pytest.fixture
@@ -111,3 +117,66 @@ def harness():
 async def llm_http(harness):
     async with httpx.AsyncClient(transport=httpx.MockTransport(harness.handle), trust_env=False) as client:
         yield client
+
+
+@pytest.fixture
+async def bridge(isolated_db_engine, monkeypatch):
+    engine = isolated_db_engine
+    sessions = sessionmaker(engine, expire_on_commit=False)
+    state = SimpleNamespace(calls=[], failure=None, empty=False, path_failures={},
+                            mcp_calls=[], mcp_failure=None, mcp_failure_method="tools/call")
+    products = {
+        1: {"id": 1, "title": "Fixture laptop", "price": 19.99, "description": "Fixture laptop only",
+            "category": "laptops", "stock": 20, "minimumOrderQuantity": 1},
+        2: {"id": 2, "title": "Fixture keyboard", "price": 0.1, "description": "Fixture keyboard only"},
+    }
+
+    def catalog(request):
+        assert request.url.host == "dummyjson.com"
+        state.calls.append(request.url.path)
+        failure = state.path_failures.get(request.url.path, state.failure)
+        if isinstance(failure, Exception):
+            raise failure
+        if failure is not None:
+            return httpx.Response(failure, text="private-upstream-content")
+        if request.url.path == "/products/search":
+            items = [] if state.empty else list(products.values())
+            return httpx.Response(200, json={"products": items, "total": len(items), "skip": 0, "limit": 30})
+        if request.url.path == "/products/category-list":
+            return httpx.Response(200, json=[])
+        product = products.get(int(request.url.path.rsplit("/", 1)[1]))
+        return httpx.Response(200, json=product) if product else httpx.Response(404)
+
+    monkeypatch.setattr("purchase_mcp.server.create_http_client", lambda timeout: httpx.AsyncClient(
+        base_url="https://dummyjson.com", transport=httpx.MockTransport(catalog), trust_env=False,
+    ))
+    monkeypatch.setenv("MCP_HOST", "127.0.0.1")
+    monkeypatch.setenv("MCP_PORT", "8001")
+    repository = PurchaseRequestRepository(sessions)
+    app = create_server(repository).streamable_http_app()
+    asgi_transport = httpx.ASGITransport(app=app)
+
+    async def mcp_transport(request):
+        payload = json.loads(request.content) if request.method == "POST" and request.content else {}
+        if payload.get("method") == "tools/call":
+            state.mcp_calls.append(deepcopy(payload["params"]))
+        if payload.get("method") == state.mcp_failure_method and state.mcp_failure is not None:
+            if isinstance(state.mcp_failure, Exception):
+                raise state.mcp_failure
+            return httpx.Response(state.mcp_failure, text="private-mcp-failure")
+        return await asgi_transport.handle_async_request(request)
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(mcp_transport), trust_env=False) as http:
+            provider = MCPToolProvider(MCPSettings(server_url="http://127.0.0.1:8001/mcp"), http)
+            yield SimpleNamespace(provider=provider, sessions=sessions, state=state, app=app,
+                                  engine=engine, repository=repository, products=products)
+
+
+@pytest.fixture
+def purchase_args():
+    return {"request": {
+        "title": "Integration test", "requester_name": "Fixture requester",
+        "idempotency_key": "11111111-1111-4111-8111-111111111111",
+        "items": [{"product_id": 1, "quantity": 3}, {"product_id": 2, "quantity": 3}],
+    }}

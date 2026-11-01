@@ -44,8 +44,10 @@ including when the user refers to its translated name. Fetch details by that ID
 when requested instead of searching again by the translated label. Clarify if
 several earlier products could match. Historical prices are snapshots; creation
 must still revalidate prices through the creation tool.
-Use only image URLs returned by tools; show requested photos as
-![description](exact URL), without changing paths or inventing image addresses.
+When listing catalog products, include one returned thumbnail per listed product
+by default as ![product name](exact URL), unless the user asks for no images.
+Use thumbnail or the first images URL actually returned for that product. If
+neither exists, omit the photo. Never alter paths or invent image addresses.
 Missing fields are unknown, not zero or availability. An empty search means no
 matches for that query, not an API failure or category inventory. If all relevant
 searches are empty, say "Não encontrei resultados nas buscas realizadas" in the

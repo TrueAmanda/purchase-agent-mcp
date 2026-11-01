@@ -6,6 +6,13 @@ import { ChatMessage } from './ChatMessage';
 const thumbnail = 'https://cdn.dummyjson.com/product-images/beauty/eyeshadow-palette-with-mirror/thumbnail.webp';
 
 describe('catalog images in assistant messages', () => {
+  it.each(["dior-j'adore", 'dior-j%27adore'])('renders legitimate product paths containing an apostrophe: %s', (slug) => {
+    const url = `https://cdn.dummyjson.com/product-images/fragrances/${slug}/thumbnail.webp`;
+    render(<MessageContent text={`Dior J'adore - US$ 89,99.\n![Dior J'adore](${url})`} />);
+    expect(screen.getByRole('img', { name: "Dior J'adore" }).getAttribute('src')).toBe(url);
+    expect(screen.getByRole('link', { name: "Abrir imagem: Dior J'adore" }).getAttribute('href')).toBe(url);
+  });
+
   it('renders the returned Markdown thumbnail while preserving surrounding text', () => {
     render(<MessageContent text={`Produto encontrado.\nImagem: ![imagem](${thumbnail})\nPreço: US$ 19,99.`} />);
     const image = screen.getByRole('img', { name: 'Imagem do produto' });
@@ -39,6 +46,7 @@ describe('catalog images in assistant messages', () => {
     'https://cdn.dummyjson.com:8443/product-images/beauty/palette/thumbnail.webp',
     'https://cdn.dummyjson.com/private/thumbnail.webp',
     'https://cdn.dummyjson.com/product-images/beauty/palette/thumbnail.svg',
+    'https://cdn.dummyjson.com/product-images/fragrances/dior-j%2527adore/thumbnail.webp',
     'data:image/png;base64,AAAA', 'javascript:alert(1)', '/thumbnail.webp',
   ])('keeps unsupported image URLs as inert text: %s', (url) => {
     const text = `![imagem](${url})`;

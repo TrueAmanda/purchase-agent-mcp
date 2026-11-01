@@ -1,10 +1,15 @@
 FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-WORKDIR /app
+WORKDIR /workspace
 COPY shared /opt/purchase-storage
-COPY mcp-server/requirements.txt mcp-server/requirements-test.txt ./
-RUN pip install --no-cache-dir /opt/purchase-storage -r requirements-test.txt
-COPY mcp-server/purchase_mcp ./purchase_mcp
-COPY mcp-server/pytest.ini .
-COPY mcp-server/tests ./tests
+COPY mcp-server/requirements.txt mcp-server/requirements-test.txt ./mcp-server/
+COPY backend/requirements.txt backend/requirements-test.txt ./backend/
+RUN pip install --no-cache-dir /opt/purchase-storage -r mcp-server/requirements-test.txt -r backend/requirements-test.txt
+COPY mcp-server/purchase_mcp ./mcp-server/purchase_mcp
+COPY mcp-server/tests ./mcp-server/tests
+COPY backend/app ./backend/app
+COPY backend/tests ./backend/tests
+COPY tests/manual ./tests/manual
+COPY test_support ./test_support
+COPY pytest.ini conftest.py ./
 CMD ["python", "-m", "pytest", "-q"]

@@ -31,6 +31,23 @@ class PromptSandbox:
             {"id": 50, "name": "Fixture whisk", "description": "For whisking in the kitchen.",
              "price": "5.00", "currency": "USD", "category": "kitchen-accessories"},
         ] if scenario == "skin_care" else []
+        if scenario in {"fragrance_images", "fragrance_no_images"}:
+            self.catalog = [
+                {"id": index, "name": name, "description": "Synthetic fragrance for image evaluation.",
+                 "category": "fragrances", "price": price, "currency": "USD",
+                 "thumbnail": f"https://cdn.dummyjson.com/product-images/fragrances/{slug}/thumbnail.webp",
+                 "images": [f"https://cdn.dummyjson.com/product-images/fragrances/{slug}/1.webp"]}
+                for index, (name, price, slug) in enumerate([
+                    ("Fixture Fresh", "49.99", "fixture-fresh"),
+                    ("Fixture Premium", "129.99", "fixture-premium"),
+                    ("Fixture J'adore", "89.99", "fixture-j'adore"),
+                    ("Fixture Shine", "69.99", "fixture-shine"),
+                    ("Fixture Bloom", "79.99", "fixture-bloom"),
+                ], start=1)
+            ]
+            if scenario == "fragrance_no_images":
+                for product in self.catalog:
+                    product.update(thumbnail=None, images=None)
         self.product = {
             "id": 1, "name": "Fixture keyboard", "description": "Synthetic evaluation product.",
             "price": "100.00", "currency": "USD", "stock": 10,
@@ -92,7 +109,7 @@ class PromptSandbox:
         if name == "buscar_produtos":
             if self.scenario == "search_error":
                 raise ToolExecutionError("Synthetic catalog outage.")
-            if self.scenario == "skin_care":
+            if self.catalog:
                 async with httpx.AsyncClient(base_url="https://dummyjson.com", trust_env=False,
                                              transport=httpx.MockTransport(self._catalog_response)) as http:
                     result = await ProductClient(http).search_products(arguments["termo"])
@@ -106,7 +123,7 @@ class PromptSandbox:
             return {"status": "success" if products else "no_results", "query": arguments["termo"],
                     "source": "dummyjson", "products": products, "total": len(products), "skip": 0, "limit": len(products)}
         if name == "detalhar_produto":
-            if self.scenario == "skin_care":
+            if self.catalog:
                 product = next((product for product in self.catalog if product["id"] == arguments["id"]), None)
                 if product is None:
                     raise ToolExecutionError("Synthetic product not found.")

@@ -2,6 +2,8 @@
 
 Agente de compras com FastAPI, servidor MCP independente, PostgreSQL e interface React/TypeScript. As ferramentas MCP `buscar_produtos(termo)` e `detalhar_produto(id)` consultam a DummyJSON; `criar_requisicao(request)` valida os produtos e grava uma requisição de compra no PostgreSQL. O agente OpenRouter descobre e executa essas ferramentas pelo protocolo MCP, conforme as decisões do modelo. A interface permite enviar pedidos, visualizar respostas e consultar registros confirmados.
 
+**Uso de IA:** o Codex auxiliou na estruturação, implementação, depuração, testes e documentação do projeto. As validações executadas e suas limitações estão registradas neste README e no [roteiro de integração](docs/integration-testing.md); os testes simulados não substituem a avaliação das respostas do modelo real.
+
 ## Iniciar com Docker Compose
 
 Requisitos: Docker Engine/Desktop com containers Linux e Docker Compose v2.
@@ -99,7 +101,7 @@ npm.cmd run dev -- --port 5174
 
 Abra **http://localhost:5174**. A porta separada permite manter o frontend Docker em 5173; o proxy do Vite encaminha `/api` ao backend sem exigir CORS. Em Linux/macOS, use `npm` em vez de `npm.cmd`. `VITE_API_BASE_URL` pode ser definida no processo ou em `frontend/.env.local` (ignorado pelo Git), sem credenciais; no Compose, é incorporada pelo build a partir do `.env` da raiz. `vite preview` serve o build, mas não substitui o proxy de desenvolvimento ou o Nginx do Compose.
 
-Os **95 testes** usam Vitest, React Testing Library, jsdom e fetch simulado. Cobrem envio/teclado/IME, mensagens, bloqueio de duplicação, validação, contratos inconsistentes, confirmação/replay, busca vazia, erros externos, rede/timeout, consulta de registros, dados legados, proteção contra interpretação de HTML, formatação monetária, histórico de ferramentas, imagens e continuidade/expiração do contexto. Não acessam internet, OpenRouter ou dados de desenvolvimento. As dependências de teste são apenas de desenvolvimento; a aplicação usa fetch nativo.
+Os **98 testes** usam Vitest, React Testing Library, jsdom e fetch simulado. Cobrem envio/teclado/IME, mensagens, bloqueio de duplicação, validação, contratos inconsistentes, confirmação/replay, busca vazia, erros externos, rede/timeout, consulta de registros, dados legados, proteção contra interpretação de HTML, formatação monetária, histórico de ferramentas, imagens e continuidade/expiração do contexto. Não acessam internet, OpenRouter ou dados de desenvolvimento. As dependências de teste são apenas de desenvolvimento; a aplicação usa fetch nativo.
 
 ### Contexto entre mensagens
 
@@ -133,6 +135,10 @@ Validação com OpenRouter e MCP reais, pelo proxy do frontend: “Estou procura
 Para repetir no chat, atualize a página, use **Nova conversa** e envie essas duas mensagens em sequência. Mensagens anteriores à atualização não podem ser recuperadas como contexto. Em Postman, envie `conversation_id: null` na primeira e copie o UUID da resposta para o segundo POST. Omitir o campo mantém o comportamento independente dos exemplos antigos.
 
 As respostas do assistente reconhecem imagens no formato `![descrição](URL)`. O componente mostra até seis imagens por mensagem, com dimensões limitadas, carregamento sob demanda e abertura da imagem original ao clicar. Aceita somente HTTPS no host exato `cdn.dummyjson.com`, sob `/product-images/`, com extensões raster conhecidas, sem credenciais, portas alternativas, query ou fragmento. Não constrói URLs a partir de IDs nem gera fotos de substituição. Se o carregamento falhar, mostra **Imagem indisponível**. URLs não aceitas e demais marcações permanecem como texto; HTML nunca é interpretado. Mensagens do usuário continuam literais. As fotos são carregadas diretamente do CDN pelo navegador, com `referrerPolicy: no-referrer`.
+
+Ao listar produtos, o prompt agora orienta incluir por padrão uma imagem real de cada item apresentado (`thumbnail`, ou a primeira URL de `images`), salvo pedido explícito sem imagens. Sem URL retornada pela ferramenta, a foto é omitida. O frontend depende desse Markdown na mensagem; nomes de produtos sozinhos não geram imagens. Endereços legítimos com apóstrofo, como `dior-j'adore`, e sua forma `%27` são aceitos mantendo as restrições de host/caminho. A correção passou em **98 testes frontend**, build, Ruff e **440 testes Python locais** (uma migração PostgreSQL pulada), além de **três avaliações selecionadas com OpenRouter real e ferramentas simuladas** para imagem padrão, recusa de imagens e URL ausente.
+
+No POST real “Consulte a categoria fragrances e mostre opções de perfumes com preço unitário de até US$ 100”, a resposta retornou os quatro perfumes dentro do teto, cada um com Markdown de sua imagem. As quatro URLs foram comparadas às retornadas pelo MCP e responderam HTTP 200 com `image/webp`, incluindo o caminho do Dior J'adore. O React foi verificado por testes DOM e build; essa execução não incluiu inspeção visual em navegador. Após a atualização dos containers, use uma nova conversa para repetir o pedido.
 
 A busca da DummyJSON usa o texto enviado, sem tradução automática de português. O prompt orienta o agente a escolher palavras-chave concisas em inglês, por exemplo `máscara de cílios` → `mascara`, mantendo a resposta em português e a categoria solicitada. Um resultado vazio vale para aquela consulta; não comprova ausência da categoria no catálogo. O agente decide se outra palavra-chave é útil, sem uma sequência fixa no backend. Fotos solicitadas devem usar o endereço exato de `thumbnail`/`images` retornado pelas ferramentas, em Markdown.
 
@@ -483,8 +489,10 @@ including when the user refers to its translated name. Fetch details by that ID
 when requested instead of searching again by the translated label. Clarify if
 several earlier products could match. Historical prices are snapshots; creation
 must still revalidate prices through the creation tool.
-Use only image URLs returned by tools; show requested photos as
-![description](exact URL), without changing paths or inventing image addresses.
+When listing catalog products, include one returned thumbnail per listed product
+by default as ![product name](exact URL), unless the user asks for no images.
+Use thumbnail or the first images URL actually returned for that product. If
+neither exists, omit the photo. Never alter paths or invent image addresses.
 Missing fields are unknown, not zero or availability. An empty search means no
 matches for that query, not an API failure or category inventory. If all relevant
 searches are empty, say "Não encontrei resultados nas buscas realizadas" in the
@@ -913,6 +921,10 @@ Repita os comandos de inspeção das tabelas. `docker compose down` preserva o v
 
 ## Verificações de desenvolvimento
 
+O roteiro completo de integração está em **[docs/integration-testing.md](docs/integration-testing.md)**: cobertura POST/agente/MCP/SQL/GET, execução offline e com PostgreSQL isolado, testes reais A/B/C, inspeção por `psql`, simulação/restauração da DummyJSON e pendências de validação do PDF. Os testes novos ficam em `backend/tests/integration/` e reutilizam as fixtures de protocolo do backend e a fixture SQL em `test_support/database.py`.
+
+Última validação: **440 testes Python locais aprovados e 1 pulado; 441 aprovados no Compose com PostgreSQL isolado; 95 testes frontend aprovados; Ruff e build aprovados**. Os quatro serviços do Compose principal ficaram saudáveis e os registros locais foram preservados. A conferência dos requisitos do PDF, incluindo pendências de teste real e entrega, está em [docs/case-validation.md](docs/case-validation.md). Os totais de execuções se sobrepõem.
+
 O backend utiliza Pytest para os testes do agente e também executa os testes de infraestrutura existentes em `unittest`. HTTPX faz parte da implementação do agente. A partir da raiz, com Python 3.12:
 
 ```powershell
@@ -945,13 +957,13 @@ Com o ambiente ativado, basta `python -m pytest mcp-server -q`. No Linux/macOS, 
 
 O modo local usa um arquivo SQLite temporário novo para cada teste, com chaves estrangeiras habilitadas e suporte a múltiplas conexões. Apenas o teste de migração SQL específico de PostgreSQL é pulado nesse modo. A criação, os cálculos, as restrições, o rollback, a concorrência e as chamadas MCP são executados normalmente.
 
-Para executar **todos os cenários com PostgreSQL real**, use um único comando na raiz:
+Para executar **toda a suíte Python, incluindo backend e MCP, com PostgreSQL isolado**, use um único comando na raiz:
 
 ```powershell
 docker compose -f compose.test.yaml up --build --abort-on-container-exit --exit-code-from mcp-tests
 ```
 
-O código de saída é o do Pytest: `0` indica sucesso. Mensagens PostgreSQL de violação de CHECK ou chave única são esperadas nos cenários que forçam rollback e concorrência; confira o resultado final do Pytest. A primeira construção da imagem e o download das dependências precisam de rede; a execução dos testes não usa serviços externos. A imagem de testes usa `Dockerfile.test` e dependências separadas; a imagem de execução do servidor continua sem Pytest.
+O serviço histórico `mcp-tests` agora executa backend e MCP. O código de saída é o do Pytest: `0` indica sucesso. Mensagens PostgreSQL de violação de CHECK ou chave única são esperadas nos cenários que forçam rollback e concorrência; confira o resultado final do Pytest. A primeira construção da imagem e o download das dependências precisam de rede; a execução dos testes não usa serviços externos. A imagem de testes usa `Dockerfile.test` e dependências separadas; a imagem de execução do servidor continua sem Pytest.
 
 Esse Compose é independente do `compose.yaml` de desenvolvimento. Ele possui projeto, serviços e rede próprios, não publica portas, não lê credenciais de aplicação e não monta volumes de desenvolvimento. O PostgreSQL guarda seus dados em `tmpfs`; a rede de teste é interna, sem saída para a internet. As credenciais fixas do arquivo são exclusivas desse banco descartável de teste.
 
@@ -1001,7 +1013,7 @@ Para reproduzir as verificações localmente, na raiz, usando o ambiente virtual
 
 ```powershell
 .\mcp-server\.venv\Scripts\python.exe -m pip install -r mcp-server/requirements-ci.txt -r backend/requirements-test.txt -e ./shared
-.\mcp-server\.venv\Scripts\python.exe -m ruff check backend mcp-server shared
+.\mcp-server\.venv\Scripts\python.exe -m ruff check backend mcp-server shared conftest.py test_support tests/manual
 .\mcp-server\.venv\Scripts\python.exe -m pytest -q
 ```
 

@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import unicodedata
+from decimal import Decimal
 from uuid import UUID
 
 import httpx
@@ -256,3 +257,22 @@ async def test_broad_category_search_uses_product_types_without_claiming_catalog
     normalized = normalize(content)
     assert re.search(r"soap|sabonete|lotion|locao|wash|corporal", normalized), content
     assert not re.search(r"nao (?:ha|existem).{0,60}produtos.{0,40}(?:catalogo|categoria)", normalized), content
+
+
+@pytest.mark.parametrize("mode", ["default_images", "explicit_opt_out", "missing_urls"])
+async def test_catalog_listing_images_follow_tool_evidence_and_user_preference(evaluate, mode):
+    message = "Consulte a categoria fragrances e mostre opções de perfumes com preço unitário de até US$ 100."
+    if mode == "explicit_opt_out":
+        message += " Não inclua imagens."
+    scenario = "fragrance_no_images" if mode == "missing_urls" else "fragrance_images"
+    content, sandbox = await evaluate(message, scenario)
+    assert any(name == "buscar_produtos" for name, _ in sandbox.calls), (content, sandbox.calls)
+    assert all(name != "criar_requisicao" for name, _ in sandbox.calls), (content, sandbox.calls)
+    urls = re.findall(r"!\[[^\]\r\n]*\]\(([^\s)]+)\)", content)
+    if mode != "default_images":
+        assert urls == [], content
+        if mode == "missing_urls":
+            assert "cdn.dummyjson.com" not in content, content
+    else:
+        expected = {product["thumbnail"] for product in sandbox.catalog if Decimal(product["price"]) <= Decimal("100")}
+        assert len(urls) == len(expected) == 4 and set(urls) == expected, content

@@ -11,7 +11,7 @@ export function catalogImageUrl(candidate: string): string | null {
     const url = new URL(candidate);
     if (url.protocol !== 'https:' || url.hostname !== 'cdn.dummyjson.com' || url.port
       || url.username || url.password || url.search || url.hash
-      || !/^\/product-images\/[a-z0-9_/-]+\.(webp|png|jpe?g|avif)$/i.test(url.pathname)) return null;
+      || !/^\/product-images\/(?:[a-z0-9_'/-]|%27)+\.(webp|png|jpe?g|avif)$/i.test(url.pathname)) return null;
     return url.href;
   } catch { return null; }
 }

@@ -3,26 +3,22 @@
 import asyncio
 from copy import deepcopy
 from contextlib import asynccontextmanager
-import os
-import re
 import socket
-from uuid import uuid4
 
 import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 import pytest
-from sqlalchemy import create_engine, event, func, select
-from sqlalchemy.engine import make_url
+from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.schema import CreateSchema, DropSchema
 import uvicorn
 
-from purchase_storage import Base, PurchaseRequest, PurchaseRequestItem
+from purchase_storage import PurchaseRequest, PurchaseRequestItem
 from purchase_mcp.repositories.purchase_requests import PurchaseRequestRepository
 from purchase_mcp.server import create_server
 from purchase_mcp.services.product_client import ProductClient
 from purchase_mcp.services.purchase_requests import PurchaseRequestService
+from test_support.database import isolated_db_engine as isolated_db_engine
 
 
 @pytest.fixture
@@ -119,53 +115,9 @@ async def product_client(catalog):
         yield ProductClient(client)
 
 
-def validate_test_database_url(raw_url):
-    url = make_url(raw_url)
-    if url.drivername != "postgresql+psycopg" or url.database != "purchase_mcp_test":
-        raise ValueError("TEST_DATABASE_URL must point to a postgresql+psycopg database named purchase_mcp_test.")
-    return url
-
-
 @pytest.fixture
-def db_engine(tmp_path):
-    """A new SQLite file or a unique schema in the explicit PostgreSQL test DB."""
-    raw_url = os.getenv("TEST_DATABASE_URL")
-    if not raw_url:
-        engine = create_engine(
-            f"sqlite:///{(tmp_path / 'purchase-test.sqlite').as_posix()}",
-            connect_args={"check_same_thread": False, "timeout": 10}, hide_parameters=True,
-        )
-
-        @event.listens_for(engine, "connect")
-        def enable_foreign_keys(connection, record):
-            connection.execute("PRAGMA foreign_keys=ON")
-
-        try:
-            Base.metadata.create_all(engine)
-            yield engine
-        finally:
-            engine.dispose()
-        return
-
-    url = validate_test_database_url(raw_url)
-    schema = "mcp_test_" + uuid4().hex
-    assert re.fullmatch(r"mcp_test_[a-f0-9]{32}", schema)
-    admin = create_engine(url, hide_parameters=True)
-    with admin.begin() as connection:
-        connection.execute(CreateSchema(schema))
-    engine = create_engine(
-        url, hide_parameters=True,
-        connect_args={"options": f"-c search_path={schema}", "connect_timeout": 3},
-        execution_options={"schema_translate_map": {None: schema}},
-    )
-    try:
-        Base.metadata.create_all(engine)
-        yield engine
-    finally:
-        engine.dispose()
-        with admin.begin() as connection:
-            connection.execute(DropSchema(schema, cascade=True))
-        admin.dispose()
+def db_engine(isolated_db_engine):
+    return isolated_db_engine
 
 
 @pytest.fixture

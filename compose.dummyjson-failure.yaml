@@ -1,0 +1,9 @@
+# Manual test only; combine with compose.yaml, then restore the base configuration.
+services:
+  mcp-server:
+    volumes:
+      - ./tests/manual/simulate_dummyjson_failure.py:/opt/manual-test/simulate_dummyjson_failure.py:ro
+    command:
+      - python
+      - -c
+      - "import runpy; runpy.run_path('/opt/manual-test/simulate_dummyjson_failure.py', run_name='__main__')"
